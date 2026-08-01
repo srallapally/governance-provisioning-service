@@ -274,35 +274,74 @@ renumbered away.
    checks, clock skew, replay cache. It is written and tested; it just has no
    server mounting it today.
 
-   **The fork that decides the implementation: are the authority's access
-   tokens JWTs or opaque?** JWKS validation needs a JWT. If IGA's authority
-   issues opaque tokens, no amount of JWKS configuration will verify one and
-   P4 must call the authority's introspection endpoint (RFC 7662) instead —
-   a network round trip per request, which wants a short-TTL cache keyed by
-   token hash. Decide by decoding one token: three dot-separated base64
-   segments means JWT. Everything below assumes JWT.
+   **The authority is ForgeRock AM** (Identity Cloud tenant
+   `openam-qa-iga-jun25.forgeblocks.com`, realm `/`). A sample access token
+   settles the open questions and raises two new ones.
 
-   **Configuration still needed** — the client-credentials block does not
-   supply any of it: issuer, JWKS URL (usually discoverable at
-   `{issuer}/.well-known/openid-configuration`), and the expected audience.
+   **JWT, not opaque — introspection is not needed.** `cts` is
+   `OAUTH2_STATELESS_GRANT` and the claims decode, so JWKS validation is the
+   right implementation and the RFC 7662 fallback is off the table.
 
-   **One security consequence to settle deliberately rather than inherit.**
-   If the token this service *sends* to IGA is accepted by this service, then
-   a token leaked or logged anywhere in the IGA call path is also a credential
-   against the provisioning API, and any holder of that client's token can
-   enqueue provisioning operations. The `aud` claim is what separates the two:
+   **The issuer string contains an explicit port and must be configured
+   verbatim:**
 
-   - **Preferred — a distinct audience for this service.** Callers request a
-     token whose `aud` names the provisioning service; this service rejects
-     anything else. Its own outbound token, audienced at IGA, is then useless
-     against it. This is a change on the authority, not in code.
-   - **Fallback — no distinct audience.** Validate `iss`, expiry, signature,
-     and a required scope. Weaker: it accepts any token that authority issued
-     to that client, for any purpose.
+   ```
+   iss = https://openam-qa-iga-jun25.forgeblocks.com:443/am/oauth2
+   ```
 
-   Either is implementable; the first is worth asking the IGA authority's
-   owner for before P4, because retrofitting an audience after callers exist
-   means coordinating a change on both sides.
+   Issuer validation is an exact string comparison, not a URL comparison.
+   Configuring the same host without `:443` — which is what anyone would type
+   from the browser address bar — fails every token with a mismatched-issuer
+   error that looks nothing like a configuration typo. This is the single
+   most likely way P4 loses an afternoon.
+
+   Expected endpoints, **unverified**: this tenant is not reachable from the
+   development sandbox (the egress proxy refuses the CONNECT). AM's
+   conventional paths for this issuer are
+   `{iss}/.well-known/openid-configuration` for discovery and
+   `{iss}/connect/jwk_uri` for JWKS. Confirm both at P4 by fetching discovery
+   and reading `jwks_uri` from it rather than assuming the path.
+
+   **`aud` equals the client id, so it cannot separate callers.** The sample
+   carries `aud: "idmAdminClient"` and `client_id: "idmAdminClient"` — AM's
+   default for access tokens. That is the fallback posture named earlier, not
+   the preferred one: a token audienced this way is accepted by anything that
+   trusts the authority and that client, including this service, and
+   including a token minted for a different purpose entirely.
+
+   So **the scope claim carries the authorization decision, not the
+   audience.** Require `fr:iga:*` (or a narrower provisioning-specific scope,
+   which is worth requesting from the tenant's owner). Note the shape: AM
+   emits `scope` as a **JSON array**, not the space-delimited string RFC 6749
+   describes and most validators assume. A check written against a string
+   silently matches nothing.
+
+   Getting a distinct audience remains preferable and remains a tenant
+   configuration change rather than a code change. Until then, record in the
+   deployment notes that the provisioning API is reachable by any holder of an
+   `idmAdminClient` token with `fr:iga:*`.
+
+   **New discrepancy — the sample is an `authorization_code` token, not
+   `client_credentials`.** Its `grant_type` is `authorization_code`, `sub` is
+   a user UUID rather than the client, and `auth_time` and `auth_level` are
+   present. Two readings, and they lead to different code:
+
+   - The sample is simply what was to hand, and real callers use
+     client_credentials. Then `sub` identifies the client and there is no user
+     behind an operation.
+   - Callers genuinely present user-delegated tokens. Then every operation has
+     a human behind it, and the operation row should record `sub` so an
+     audit can answer who requested a provisioning change. The operation table
+     has no column for that today — adding one is a migration, and migrations
+     against this table are not cheap (see 002's ACCESS EXCLUSIVE rewrite).
+
+   Settle this before P4, and preferably before P1: if operations must carry a
+   requester, the column is far cheaper to add in the schema P1 lands than in
+   a migration afterwards.
+
+   Other observations from the sample, none blocking: token lifetime is 3600s
+   (`exp - iat`), `auth_level` is 0, and `jti` is present so the replay cache
+   in `auth.ts` has a key to work with.
 
 ### Deferred to the phase that needs them
 
@@ -562,9 +601,13 @@ writing a second one. Mount it in front of every route including the status
 endpoint: an operationId is a capability, and an unauthenticated reader could
 enumerate provisioning activity across applications.
 
-Confirm before building that the authority issues **JWTs** rather than opaque
-tokens; opaque means introspection (RFC 7662) with a short-TTL cache instead
-of JWKS, which is a different implementation. See finding 6.
+The authority is ForgeRock AM and its tokens are JWTs (confirmed from a
+sample at P0), so JWKS validation applies and introspection is not needed.
+Three details from finding 6 that will otherwise cost time: the issuer string
+contains `:443` and is compared exactly; `aud` equals the client id and
+cannot distinguish this service, so the required scope carries the
+authorization decision; and AM emits `scope` as a JSON array rather than a
+space-delimited string.
 
 `openapi.yaml` already declares `bearerAuth` as the global security scheme,
 so no change there.
@@ -586,9 +629,9 @@ resume on drain; no buffering.
 202→SUCCEEDED with Uid; 429 with depth at cap; ADD_VALUES enqueue; 10k-object
 search with bounded memory, asserted by observation not vibes. Auth: no token
 is 401 on every route including status; a token signed by an unknown key is
-401; an expired token is 401; and — when a distinct audience is configured —
-a token audienced at IGA rather than at this service is 401, which is the
-test that proves the outbound credential is not also an inbound one.
+401; an expired token is 401; a token whose `iss` omits `:443` is 401 rather
+than passing; and a valid token **without** the required scope is 403, which
+is the test that matters most while `aud` cannot separate callers.
 
 ## Phase P5: partition maintenance in-process
 
@@ -664,12 +707,20 @@ configured store is the IGA-backed one; the file store leaves them unset,
 which is what keeps local runs and CI free of credentials.
 
 Add the inbound-auth block: `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_AUDIENCE`,
-and the algorithm allowlist. Same authority as the IGA block, opposite
-direction. `AUTH_AUDIENCE` is not optional — leaving it unset is the fallback
-posture described in finding 6, where any token that authority issued to the
-client is accepted, so it must be an explicit choice rather than an omission
-nobody noticed. If it is deliberately unset, require a scope instead and log
-the weaker posture once at boot.
+`AUTH_REQUIRED_SCOPE`, and the algorithm allowlist. Same ForgeRock AM
+authority as the IGA block, opposite direction.
+
+`AUTH_ISSUER` must be the issuer string **verbatim, including `:443`** — see
+finding 6. Validate at boot that it parses and that the JWKS URL is on the
+same host, and say so plainly if not; a mismatched issuer is otherwise
+indistinguishable from a signing problem at request time.
+
+`AUTH_AUDIENCE` is `idmAdminClient` on the QA tenant, which is the client id
+and therefore does not distinguish this service from anything else that
+client can reach. Because of that `AUTH_REQUIRED_SCOPE` is **not optional**:
+it carries the authorization decision that `aud` cannot. Default it to
+`fr:iga:*` and refuse to boot if it is empty, rather than silently accepting
+every token the authority issued to that client.
 
 Deployment is a single Docker container, so every setting here arrives as an
 environment variable and there is no config map or mounted file to reconcile
