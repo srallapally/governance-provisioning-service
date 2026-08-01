@@ -536,6 +536,53 @@ describe("lifecycle", () => {
         expect(Math.min(a, b)).toBe(0);
         await drain();
     });
+
+    it("stop({drainBudgetMs}) returns once the budget elapses, not once every attempt settles (P2)", async () => {
+        // attemptDeadlineMs comfortably outlives the drain budget, so the
+        // attempt is still genuinely running when stop() gives up waiting --
+        // proving the wait is bounded rather than incidentally fast.
+        setup({ runtime: { attemptDeadlineMs: 300 } });
+        connector.controls.hangUntilAborted();
+
+        await enqueue({ idempotencyKey: "d1", nameAttrValue: "slow", attrs: { __NAME__: "slow" } });
+        const claimed = await dispatcher.runCycle();
+        expect(claimed).toBe(1);
+        expect(dispatcher.inFlightCount).toBe(1);
+
+        const startedAt = Date.now();
+        await dispatcher.stop({ drainBudgetMs: 50 });
+        const elapsedMs = Date.now() - startedAt;
+
+        // Bounded by the budget, not by the 300ms attempt deadline. Generous
+        // upper bound to absorb real-time scheduling jitter without letting
+        // an unbounded wait pass silently.
+        expect(elapsedMs).toBeLessThan(250);
+        // stop() only ever stops waiting; it never cancels anything (no
+        // AbortSignal is ever handed to an attempt), so the attempt this
+        // budget gave up on is still running in the background.
+        expect(dispatcher.inFlightCount).toBe(1);
+
+        // Let the facade's own deadline abort it for real, so the test does
+        // not leave a dangling in-flight promise behind it.
+        await new Promise((r) => setTimeout(r, 350));
+        expect(dispatcher.inFlightCount).toBe(0);
+    });
+
+    it("stop() with no budget waits unboundedly, as every existing caller relies on", async () => {
+        setup({ runtime: { attemptDeadlineMs: 40 } });
+        connector.controls.hangUntilAborted();
+
+        await enqueue({ idempotencyKey: "d2", nameAttrValue: "eventually", attrs: { __NAME__: "eventually" } });
+        await dispatcher.runCycle();
+        expect(dispatcher.inFlightCount).toBe(1);
+
+        await dispatcher.stop();
+
+        // No opts at all means the omitted-budget branch, which waits for
+        // the real Promise.allSettled -- the attempt has genuinely finished
+        // by the time stop() resolves, not merely been given up on.
+        expect(dispatcher.inFlightCount).toBe(0);
+    });
 });
 
 describe("read-back deferral (BUG-1)", () => {
