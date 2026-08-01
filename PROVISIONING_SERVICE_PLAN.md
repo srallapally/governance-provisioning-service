@@ -446,7 +446,18 @@ record the choices instead.
 
 ## Phase P1: receive the extraction
 
-- Add core git dependency pinned to the F13 commit.
+- Add core as a dependency pinned to the F13 commit. **Deviation, recorded at
+  P1: a git dependency is not usable here.** npm resolves a git dependency to
+  the repository *root*, and core is `packages/core` of a workspace -- npm has
+  no subdirectory syntax for git deps, so `github:owner/repo#sha` would install
+  the private workspace root, under the wrong package name, with no `dist`.
+  Instead core is built from the pinned commit and vendored as a tarball at
+  `vendor/governance-connector-framework-core-<version>-<sha>.tgz`, referenced
+  by `file:`. The commit is in the filename, so the pin is visible in
+  `package.json` and a re-vendor cannot silently reuse a cached tarball.
+  `scripts/vendor-core.sh` regenerates it. This also has the property the plan
+  wanted from publishing: every install exercises the *packaged* shape of core,
+  which is how BUG-5 and BUG-6 were found.
 - Bring over, with imports rewritten to local paths: `OperationStore`,
   `Dispatcher`, admission, `schema.sql`,
   `migrations/002_status_and_optype.sql`, `OperationOutcome` (now local, e.g.
@@ -475,6 +486,27 @@ record the choices instead.
 apt-installed Postgres via `test-pg.sh` (CC web has no Docker); contract suite
 passes against both stores; soak runs and reproduces the baseline within
 reason (record the numbers).
+
+**Delivered.** 208 tests green, 51 of them the pg tier. Contract suite passes
+against both stores (46 memory, 51 pg). Soak reproduced all three recorded
+scenarios within 12%, zero lane violations; numbers are in `soak.ts`'s header
+next to the Phase 11 baseline.
+
+Two framework defects surfaced, both invisible from inside the framework's own
+monorepo and both found precisely because this repo consumes core as a package:
+BUG-5, core imported `zod` without declaring it, resolving only through
+hoisting; and BUG-6, the `testing` barrel eagerly loaded the vitest-dependent
+clock, making `makeFakeConnector` unusable outside a vitest worker and so
+breaking the soak script F13 had moved here. Both are fixed in the framework at
+`8d1eeeb` and filed in its `BUG_LOG.md`; core is pinned to that commit rather
+than to `e633763`.
+
+The dispatcher gained one seam it did not have in the framework: instance
+config is now core's `ResolvedRuntimeConfig` merged with this service's
+`ResolvedSchedulingConfig`, looked up through an injectable
+`scheduling(instanceId)` and cached per instance and budget. Omit the lookup
+and every instance resolves the documented defaults, which is exactly what
+core did before the split.
 
 ## Phase P1.5: enforce the interactive slice (BUG-4)
 

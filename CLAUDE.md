@@ -35,9 +35,15 @@ Three repositories in the end state:
 
 ## Current state
 
-Phase P0 is complete: scaffold, config, and documents. **There is no
-application code yet.** `src/index.ts` is a placeholder that exists so `tsc`
-has an input; Phase P2 replaces it with the wiring module.
+Phases P0 and P1 are complete. The operation table, dispatcher, and admission
+gate live in `src/ops/`; application config and the scheduling half of an
+instance's settings live in `src/config/`. `src/index.ts` is still a
+placeholder -- Phase P2 replaces it with the wiring module that assembles
+these into a running service.
+
+Core is consumed as a vendored tarball built from a pinned framework commit,
+not a git dependency; see the P1 note in the plan for why, and
+`scripts/vendor-core.sh` to regenerate it.
 
 Phases P1 through P8 are described in `PROVISIONING_SERVICE_PLAN.md`. Read the
 P0 findings section at the top of that file before starting any of them — six
