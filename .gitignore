@@ -15,3 +15,6 @@ build/
 # .env files should not be committed for security
 .env
 .env.*
+
+# Local throwaway PostgreSQL cluster created by scripts/test-pg.sh
+.pgdata/

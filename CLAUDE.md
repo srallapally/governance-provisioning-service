@@ -41,11 +41,13 @@ has an input; Phase P2 replaces it with the wiring module.
 
 Phases P1 through P8 are described in `PROVISIONING_SERVICE_PLAN.md`. Read the
 P0 findings section at the top of that file before starting any of them — six
-discovery items had no answer at P0 and each blocks a specific phase. Two have
-since been answered: there is no metrics stack (P6 revised to suit), and
+discovery items had no answer at P0 and each blocks a specific phase. Three
+have since been settled: there is no metrics stack (P6 revised to suit);
 per-application instance configs are pulled by application id from an
-`ApplicationConfigStore` at operation time, defaulting to a file store
-(P1 and P7 revised; registration is lazy, not a boot step).
+`ApplicationConfigStore` at operation time, defaulting to a file store (P1 and
+P7 revised, registration is lazy rather than a boot step); and schema delivery
+is `scripts/db-setup.sh`, which rescoped P3 to the checks that genuinely need
+a real instance.
 
 ## Commands
 
