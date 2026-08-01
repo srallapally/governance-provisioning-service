@@ -70,6 +70,9 @@ first commit than to retrofit it over a dispatcher.
 | Logging | Structured JSON to stdout, no library until there is a reason for one | P6 |
 | Metrics stack | None exists — stdout sink + in-memory snapshot, no client library | P6 |
 | SIGTERM handling | `wiring.stop()`: stop claiming, drain in-flight to a budget, release leases, close pools | P2 |
+| Deployment | A single Docker container, not Kubernetes | P2/P5 |
+| Outbound auth to IGA | OAuth client credentials, ported from the framework's `OAuthTokenProvider`; lazy refresh, fetched once at boot | P2/P7 |
+| Inbound auth on routes | **Undetermined** — needs issuer, JWKS URL, audience | P4 |
 | Instance config location | JSON in the IGA repo, pulled by application id; file store by default | P1/P7 |
 | Schema delivery | `scripts/db-setup.sh`, run out of band; inspects the target to choose schema vs migration | P3 |
 
@@ -216,13 +219,63 @@ renumbered away.
    names it. That matches the framework's own lazy lifecycle — CP-3 rejected
    eager `initInstance` looping at boot for the same reason — and it means a
    newly onboarded application needs no restart.
-5. **Deployment target** — not named in P0's list but implied by P5, which
-   rejects "a k8s CronJob (new pod)" in favour of an in-process timer. That
-   phrasing assumes Kubernetes. Confirmation is needed before P5's design is
-   load-bearing.
-6. **Existing service auth** — CP-1 says new routes sit behind it. With no
-   middleware repo there is no existing auth to sit behind, so P4 either
-   adopts the framework's JWT bearer middleware or receives a decision.
+5. ~~**Deployment target**~~ — **ANSWERED 2026-08-01: a Docker container.**
+   Kubernetes was the alternative; the simpler option was chosen deliberately.
+
+   This strengthens P5 rather than changing it. P5 already rejected a k8s
+   CronJob in favour of an in-process timer; in a plain container there is no
+   CronJob to reject, so the in-process timer is the only option and its
+   design is load-bearing rather than merely preferred. Two consequences
+   follow from being one process in one container:
+
+   - **Nothing else will restart it.** No kubelet liveness probe, no
+     ReplicaSet. `stop()` on SIGTERM matters more, not less, and an unhandled
+     rejection that kills the process is an outage rather than a restart.
+   - **Partition maintenance has no fallback.** If the hourly timer stops, the
+     table stops accepting inserts once the last partition's day passes. P5's
+     metric on refused drops is not the only signal that matters — a *missing*
+     partition needs one too.
+
+6. **Existing service auth** — **outbound answered, inbound still open.**
+
+   **Outbound (answered):** the service reaches into IGA using OAuth 2.0
+   client credentials — client id, client secret, token URL — fetching an
+   access token at startup and renewing it on expiry.
+
+   The framework already has this working:
+   `packages/websocket/src/server/OAuthTokenProvider.ts` implements the
+   client-credentials grant with a 30-second early-expiry margin, optional
+   scope/audience/resource, and `invalidate()` for a 401. **Port it, do not
+   depend on it** — it lives in the websocket package, which is a deployable
+   service rather than a library, and this repo consumes `core` only.
+
+   Two details worth keeping from that implementation rather than
+   re-deciding:
+
+   - **Renewal is lazy, on use, not on a timer.** `getToken()` refetches when
+     the cached token is inside the early-expiry margin. A background refresh
+     timer would be a second thing to shut down cleanly and would keep firing
+     in an idle container for no benefit.
+   - **Still fetch once at `start()`.** Not for the token — the lazy path
+     covers that — but so bad credentials fail at deploy time rather than on
+     the first operation that needs IGA.
+
+   This is what the IGA-backed `ApplicationConfigStore` (finding 4) will
+   authenticate with. The file store needs none of it, so P1 and P1.5 are
+   unaffected; the token provider is constructed at P2 and configured at P7.
+
+   **Inbound (still open):** CP-1's "new routes sit behind existing service
+   auth" concerns callers authenticating *to* this service, which is the
+   opposite direction and is not settled by the above. A client id and secret
+   let this service *get* a token; validating one that arrives on a request
+   needs an issuer, a JWKS URL, and an expected audience.
+
+   If IGA is the only caller and issues those tokens from the same authority,
+   the natural answer is to validate bearer tokens from that issuer using the
+   framework's `packages/websocket/src/security/auth.ts` (JWKS, algorithm
+   allowlist, iss/aud checks, replay cache), ported on the same terms. That
+   needs confirming, and it needs the three values above — none of which the
+   client-credentials config supplies. P4 is where it bites.
 
 ### Deferred to the phase that needs them
 
@@ -389,15 +442,30 @@ destination link.
 
 `src/provisioning/wiring.ts` constructing in order: dispatcher pg pool
 (separate from any API pool; small, max 5, `statement_timeout` set),
-`OperationStore`, `ConnectorRegistry` + loader at the connector bundle
-directory, `ConnectorManager`, `MetricsSink` (console until P6), `Dispatcher`.
+`OperationStore`, `IgaTokenProvider`, `ApplicationConfigStore`,
+`ConnectorRegistry` + loader at the connector bundle directory,
+`ConnectorManager`, `MetricsSink` (console until P6), `Dispatcher`.
 Export `start()`/`stop()`. `stop()`: stop claiming, drain in-flight up to a
 budget, release leases, close pools. Wire into SIGTERM. Data path uses
 `ConnectorManager.acquire` only; never loop `initInstance` at boot (rebuilds
 eager boot).
 
+`IgaTokenProvider` is the OAuth client-credentials provider settled at P0 —
+ported from the framework's `OAuthTokenProvider`, not depended upon. It
+refreshes lazily on use inside a 30-second early-expiry margin, so it adds
+nothing to `stop()`. `start()` fetches once anyway, purely so bad credentials
+fail at deploy time instead of on the first operation that reaches IGA.
+
+Only the IGA-backed `ApplicationConfigStore` needs it; wiring the file store
+skips it, which is what keeps this phase testable without a live IGA.
+
+Deployment is a single Docker container (P0). Nothing external restarts this
+process, so `start()` must reject on a misconfiguration rather than continue
+degraded, and an unhandled rejection anywhere in the claim loop is an outage.
+
 **Accept:** boots with wiring active, no routes; SIGTERM with an in-flight
-fake op drains then exits.
+fake op drains then exits; a bad client secret fails `start()` with the token
+endpoint's status in the message rather than surfacing later.
 
 ## Phase P3: verify the schema against the target environment
 
@@ -478,15 +546,27 @@ search with bounded memory, asserted by observation not vibes.
 
 ## Phase P5: partition maintenance in-process
 
-No k8s CronJob (new pod). Hourly timer in the dispatcher process: ensure
-today+tomorrow partitions; drop older-than-retention via
-`drop_operations_partition` only; whole pass under `pg_advisory_xact_lock`. A
-refused drop increments a metric and warn-logs partition name and row count;
-the refusal is correct and must be loud (BUG-2's lesson).
+Deployment is a single Docker container (settled at P0), so there is no
+CronJob to reject — an in-process timer is the only option, and this phase
+carries the whole of partition maintenance with nothing behind it.
+
+Hourly timer in the dispatcher process: ensure today+tomorrow partitions; drop
+older-than-retention via `drop_operations_partition` only; whole pass under
+`pg_advisory_xact_lock`. A refused drop increments a metric and warn-logs
+partition name and row count; the refusal is correct and must be loud
+(BUG-2's lesson).
+
+Because nothing else will do this work, a *missing* partition needs a signal
+too, not just a refused drop. If the timer dies, the table keeps accepting
+inserts until the last partition's day passes and then rejects every one with
+"no partition of relation found for row" — an outage whose first symptom is
+the enqueue path failing, far from the cause. Emit a gauge for how many days
+ahead a partition exists; alert on it reaching zero, not on a log line.
 
 **Accept:** partition with a PENDING row survives and increments the metric;
 terminal-only past-retention partition drops; two concurrent passes do the
-work once.
+work once; the days-ahead gauge reflects reality after a pass and after a
+deliberately skipped one.
 
 ## Phase P6: metrics binding
 
@@ -530,6 +610,19 @@ instance settings arrive as `ApplicationConfig` objects and never appear here.
 Add the config-store block: which store implementation, and for the file
 store, the directory it reads.
 
+Add the IGA block: `IGA_TOKEN_URL`, `IGA_CLIENT_ID`, `IGA_CLIENT_SECRET`, and
+optional `IGA_SCOPE` / `IGA_AUDIENCE`. The secret comes from the environment
+and is never logged — the framework's redaction helper is the precedent, and
+a token endpoint error must not echo the request body. Required only when the
+configured store is the IGA-backed one; the file store leaves them unset,
+which is what keeps local runs and CI free of credentials.
+
+Deployment is a single Docker container, so every setting here arrives as an
+environment variable and there is no config map or mounted file to reconcile
+against. Validate the whole block at `start()` and refuse to boot on a
+failure: nothing will restart the container into a better state, so a
+half-configured process that starts anyway is worse than one that does not.
+
 Instance configs flow per the P1 contract — pulled by application id, not
 loaded at boot. Registration is lazy, so a validation failure surfaces when
 an operation for that application is first dispatched rather than at startup.
@@ -541,7 +634,10 @@ and the offending setting, and do not retry a config that cannot parse.
 **Accept:** an application whose config carries `attemptDeadlineMs: -1` fails
 with the ceiling named and the application id in the message; the operation
 records `REJECTED_PRE_DISPATCH` rather than being retried; a config edited to
-a valid value is picked up on the next operation with no restart.
+a valid value is picked up on the next operation with no restart; the IGA
+block is absent without complaint when the file store is configured, and its
+absence refuses to boot when the IGA store is; a client secret never appears
+in any log line, including the token endpoint's error path.
 
 ## Phase P8: integrated soak
 
