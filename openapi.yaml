@@ -1,0 +1,358 @@
+openapi: 3.1.0
+info:
+  title: Governance Provisioning Service
+  version: 0.1.0
+  description: >-
+    Async provisioning surface over the governance connector framework.
+    Mutations are enqueued and answered 202 with an operationId; reads run
+    synchronously through a leased connector facade.
+
+    Provenance: the schema vocabulary below (OperationType, OperationPriority,
+    OperationStatus, OperationOutcome, and the bearer scheme) is copied from
+    the framework's openapi.yaml, which owned it until CP-5. The paths are new
+    -- the framework's file never declared any, by design, because the
+    framework supplies the machinery and not an HTTP surface. They are
+    authored from Phase P4's prose and are provisional until P4 implements
+    them, at which point this file becomes the authority over that prose.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /instances/{instanceId}/objects/{objectClass}:
+    parameters:
+      - $ref: "#/components/parameters/InstanceId"
+      - $ref: "#/components/parameters/ObjectClass"
+
+    post:
+      summary: Create an object
+      description: >-
+        Validated synchronously (schema, object class, naming attribute) while
+        the caller waits, then enqueued. The naming attribute is required: a
+        create whose attempt times out is resolved by reading the object back
+        by name, and without it the operation can only record INDETERMINATE.
+      operationId: enqueueCreate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRequest"
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/AdmissionRejected" }
+
+    get:
+      summary: Search objects
+      description: >-
+        Synchronous and never enqueued. Streams NDJSON: one object per line,
+        written into the response as the connector produces them. The results
+        handler returns false when the response buffer is full and resumes on
+        drain, so a slow client applies backpressure to the target rather than
+        filling this process's heap.
+      operationId: searchObjects
+      parameters:
+        - name: filter
+          in: query
+          required: false
+          schema: { type: string }
+          description: Filter expression, parsed by the framework's filter module.
+      responses:
+        "200":
+          description: A stream of objects, newline-delimited.
+          content:
+            application/x-ndjson:
+              schema:
+                $ref: "#/components/schemas/ConnectorObject"
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+
+  /instances/{instanceId}/objects/{objectClass}/{uid}:
+    parameters:
+      - $ref: "#/components/parameters/InstanceId"
+      - $ref: "#/components/parameters/ObjectClass"
+      - $ref: "#/components/parameters/Uid"
+
+    get:
+      summary: Read one object
+      description: Synchronous, through a leased connector facade.
+      operationId: getObject
+      responses:
+        "200":
+          description: The object.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConnectorObject" }
+        "404":
+          description: No object with that uid.
+
+    put:
+      summary: Replace an object's attributes
+      description: >-
+        UPDATE is always a full replace, which is what makes it safe to retry
+        freely after an indeterminate attempt. Deltas use the add-values and
+        remove-values routes.
+      operationId: enqueueUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttributesRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/AdmissionRejected" }
+
+    delete:
+      summary: Delete an object
+      description: >-
+        A delete whose target answers UNKNOWN_UID resolves SUCCEEDED -- the
+        object is absent, which is what was asked for.
+      operationId: enqueueDelete
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/AdmissionRejected" }
+
+  /instances/{instanceId}/objects/{objectClass}/{uid}/add-values:
+    parameters:
+      - $ref: "#/components/parameters/InstanceId"
+      - $ref: "#/components/parameters/ObjectClass"
+      - $ref: "#/components/parameters/Uid"
+    post:
+      summary: Add values to multi-valued attributes
+      description: >-
+        A delta, not a replace. Retried after an indeterminate attempt only
+        when the connector declares idempotentDelta.
+      operationId: enqueueAddValues
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttributesRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/AdmissionRejected" }
+
+  /instances/{instanceId}/objects/{objectClass}/{uid}/remove-values:
+    parameters:
+      - $ref: "#/components/parameters/InstanceId"
+      - $ref: "#/components/parameters/ObjectClass"
+      - $ref: "#/components/parameters/Uid"
+    post:
+      summary: Remove values from multi-valued attributes
+      operationId: enqueueRemoveValues
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttributesRequest" }
+      responses:
+        "202": { $ref: "#/components/responses/Accepted" }
+        "400": { $ref: "#/components/responses/ValidationFailed" }
+        "429": { $ref: "#/components/responses/AdmissionRejected" }
+
+  /operations/{operationId}:
+    get:
+      summary: Read an operation's status
+      description: >-
+        Poll only; no long-poll in P4. A non-terminal status carries no
+        outcome. A terminal status always carries one.
+      operationId: getOperationStatus
+      parameters:
+        - name: operationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The operation's current state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OperationState" }
+        "404":
+          description: >-
+            No operation with that id. Also returned for a syntactically
+            invalid id rather than a 500.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    InstanceId:
+      name: instanceId
+      in: path
+      required: true
+      schema: { type: string }
+      description: Connector instance the operation targets. Lanes are per instance.
+    ObjectClass:
+      name: objectClass
+      in: path
+      required: true
+      schema: { type: string }
+      description: ICF object class, e.g. __ACCOUNT__ or __GROUP__.
+    Uid:
+      name: uid
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Accepted:
+      description: >-
+        Enqueued. The operation has not run; its outcome is read from the
+        status endpoint.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AcceptedResponse" }
+
+    ValidationFailed:
+      description: >-
+        Rejected before enqueue, while the caller waits. Nothing was durably
+        recorded and nothing reached the target.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+    AdmissionRejected:
+      description: >-
+        Backlog is at its cap for this priority class. The caller may retry;
+        the depth is returned so it can decide when.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/AdmissionRejectedProblem" }
+
+  schemas:
+    OperationType:
+      type: string
+      description: >-
+        Mutation kinds the operation table accepts. Reads are synchronous and
+        are never enqueued. ADD_VALUES and REMOVE_VALUES are deltas against a
+        multi-valued attribute and require a uid; UPDATE is always a full
+        replace.
+      enum: [CREATE, UPDATE, DELETE, ADD_VALUES, REMOVE_VALUES]
+
+    OperationPriority:
+      type: string
+      description: >-
+        Scheduling class, supplied by the caller and never inferred from the
+        request shape. Defaults to batch.
+      enum: [interactive, batch]
+
+    OperationStatus:
+      type: string
+      description: >-
+        Lifecycle status. PENDING, RUNNING, and AWAITING_READBACK are
+        non-terminal; the remaining four are the terminal outcomes.
+      enum:
+        - PENDING
+        - RUNNING
+        - AWAITING_READBACK
+        - SUCCEEDED
+        - REJECTED_PRE_DISPATCH
+        - FAILED_CONFIRMED
+        - INDETERMINATE
+
+    OperationOutcome:
+      type: string
+      description: >-
+        Terminal result. The three failures are deliberately distinct because
+        the remedy differs: REJECTED_PRE_DISPATCH never reached the target and
+        is safe to retry wholesale, FAILED_CONFIRMED will refuse again, and
+        INDETERMINATE can only be settled by reconciliation.
+      enum: [SUCCEEDED, REJECTED_PRE_DISPATCH, FAILED_CONFIRMED, INDETERMINATE]
+
+    AcceptedResponse:
+      type: object
+      required: [operationId, status]
+      properties:
+        operationId: { type: string, format: uuid }
+        status:
+          $ref: "#/components/schemas/OperationStatus"
+          description: PENDING at enqueue.
+        idempotencyKey:
+          type: string
+          description: >-
+            Echoed back. Taken from the caller's request id when supplied,
+            generated otherwise. A repeat enqueue under the same key returns
+            the original operationId rather than creating a second row.
+
+    OperationState:
+      type: object
+      required: [operationId, instanceId, objectClass, type, priority, status]
+      properties:
+        operationId: { type: string, format: uuid }
+        instanceId: { type: string }
+        objectClass: { type: string }
+        type: { $ref: "#/components/schemas/OperationType" }
+        priority: { $ref: "#/components/schemas/OperationPriority" }
+        status: { $ref: "#/components/schemas/OperationStatus" }
+        outcome:
+          $ref: "#/components/schemas/OperationOutcome"
+          description: Present only once the status is terminal.
+        errorCode:
+          type: string
+          description: >-
+            The connector error code behind a failure, when one was
+            classified. Absent on success.
+        attemptCount: { type: integer, minimum: 0 }
+        result:
+          type: object
+          description: Present on SUCCEEDED.
+          properties:
+            uid: { type: string }
+            object: { $ref: "#/components/schemas/ConnectorObject" }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
+
+    CreateRequest:
+      type: object
+      required: [attributes]
+      properties:
+        attributes:
+          type: object
+          additionalProperties: true
+          description: Must include the object class's naming attribute.
+        priority: { $ref: "#/components/schemas/OperationPriority" }
+
+    AttributesRequest:
+      type: object
+      required: [attributes]
+      properties:
+        attributes:
+          type: object
+          additionalProperties: true
+        priority: { $ref: "#/components/schemas/OperationPriority" }
+
+    ConnectorObject:
+      type: object
+      required: [uid, objectClass, attributes]
+      properties:
+        uid: { type: string }
+        objectClass: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+
+    Problem:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string }
+        message: { type: string }
+
+    AdmissionRejectedProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [backlogDepth]
+          properties:
+            backlogDepth:
+              type: integer
+              description: Non-terminal rows queued for this priority class.
+            priority: { $ref: "#/components/schemas/OperationPriority" }
