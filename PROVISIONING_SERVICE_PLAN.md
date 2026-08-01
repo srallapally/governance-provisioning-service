@@ -321,27 +321,34 @@ renumbered away.
    deployment notes that the provisioning API is reachable by any holder of an
    `idmAdminClient` token with `fr:iga:*`.
 
-   **New discrepancy — the sample is an `authorization_code` token, not
-   `client_credentials`.** Its `grant_type` is `authorization_code`, `sub` is
-   a user UUID rather than the client, and `auth_time` and `auth_level` are
-   present. Two readings, and they lead to different code:
+   **Grant type — settled: callers use `client_credentials`.** The sample's
+   `authorization_code` grant and user `sub` were incidental to how it was
+   obtained. No human sits behind an operation, so **the operation table needs
+   no requester column** and P1 lands the schema unchanged. Had it gone the
+   other way, that column would have been a migration against a partitioned
+   table, which 002 already showed is an ACCESS EXCLUSIVE rewrite.
 
-   - The sample is simply what was to hand, and real callers use
-     client_credentials. Then `sub` identifies the client and there is no user
-     behind an operation.
-   - Callers genuinely present user-delegated tokens. Then every operation has
-     a human behind it, and the operation row should record `sub` so an
-     audit can answer who requested a provisioning change. The operation table
-     has no column for that today — adding one is a migration, and migrations
-     against this table are not cheap (see 002's ACCESS EXCLUSIVE rewrite).
+   **A cheaper fix for the audience problem follows from this.** With
+   client_credentials, AM sets both `sub` and `aud` to the client id. So if
+   callers authenticate as a *different client* than the one this service uses
+   for its own outbound calls to IGA, then `aud` distinguishes them after all:
 
-   Settle this before P4, and preferably before P1: if operations must carry a
-   requester, the column is far cheaper to add in the schema P1 lands than in
-   a migration afterwards.
+   - inbound tokens carry `aud = <caller's client>`, which this service
+     accepts;
+   - this service's own outbound token carries `aud = <service's client>`,
+     which this service rejects.
+
+   That restores the separation the preferred posture wanted, without asking
+   the tenant owner to configure a custom audience — it needs only a second
+   OAuth client, which is routine. **Recommended: do not reuse
+   `idmAdminClient` for the service's outbound credentials.** If one client
+   must serve both directions, the required scope is the only thing standing
+   between a leaked outbound token and the provisioning API, and the
+   deployment notes should say so.
 
    Other observations from the sample, none blocking: token lifetime is 3600s
-   (`exp - iat`), `auth_level` is 0, and `jti` is present so the replay cache
-   in `auth.ts` has a key to work with.
+   (`exp - iat`), and `jti` is present so the replay cache in `auth.ts` has a
+   key to work with.
 
 ### Deferred to the phase that needs them
 
@@ -715,12 +722,15 @@ finding 6. Validate at boot that it parses and that the JWKS URL is on the
 same host, and say so plainly if not; a mismatched issuer is otherwise
 indistinguishable from a signing problem at request time.
 
-`AUTH_AUDIENCE` is `idmAdminClient` on the QA tenant, which is the client id
-and therefore does not distinguish this service from anything else that
-client can reach. Because of that `AUTH_REQUIRED_SCOPE` is **not optional**:
-it carries the authorization decision that `aud` cannot. Default it to
-`fr:iga:*` and refuse to boot if it is empty, rather than silently accepting
-every token the authority issued to that client.
+`AUTH_AUDIENCE` is the **caller's** client id — `idmAdminClient` on the QA
+tenant, since AM sets `aud` to the client id for client_credentials. Keep
+`IGA_CLIENT_ID` different from it so the service's own outbound token is
+rejected on the way in; validate at boot that the two differ and warn loudly
+if they do not, because that collapse is invisible at request time.
+
+`AUTH_REQUIRED_SCOPE` is **not optional** regardless: it is the authorization
+decision when audiences collapse, and defence in depth when they do not.
+Default `fr:iga:*` and refuse to boot if empty.
 
 Deployment is a single Docker container, so every setting here arrives as an
 environment variable and there is no config map or mounted file to reconcile
