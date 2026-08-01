@@ -497,9 +497,9 @@ monorepo and both found precisely because this repo consumes core as a package:
 BUG-5, core imported `zod` without declaring it, resolving only through
 hoisting; and BUG-6, the `testing` barrel eagerly loaded the vitest-dependent
 clock, making `makeFakeConnector` unusable outside a vitest worker and so
-breaking the soak script F13 had moved here. Both are fixed in the framework at
-`8d1eeeb` and filed in its `BUG_LOG.md`; core is pinned to that commit rather
-than to `e633763`.
+breaking the soak script F13 had moved here. Both are fixed in the framework and filed
+in its `BUG_LOG.md`; core is pinned to `94030e4` on `main` -- the merge of that
+fix -- rather than to `e633763`.
 
 The dispatcher gained one seam it did not have in the framework: instance
 config is now core's `ResolvedRuntimeConfig` merged with this service's

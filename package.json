@@ -33,7 +33,7 @@
     "vitest": "^3.2.4"
   },
   "dependencies": {
-    "@governance-connector-framework/core": "file:vendor/governance-connector-framework-core-1.6.0-8d1eeeb.tgz",
+    "@governance-connector-framework/core": "file:vendor/governance-connector-framework-core-1.6.0-94030e4.tgz",
     "pg": "^8.13.0"
   }
 }
