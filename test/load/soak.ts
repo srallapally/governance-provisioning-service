@@ -18,6 +18,31 @@
 // per-instance budgets, and priority ordering.
 
 // ---------------------------------------------------------------------------
+// PHASE P1.5 — the interactive slice is now enforced (BUG-4)
+// ---------------------------------------------------------------------------
+// Measured back to back on one box, so the two rows differ only by the fix:
+//
+//   reservation   drain (memory 50k)   interactive p50   lanes
+//   off                    1,803/s          1,095 ms       0
+//   on                     1,322/s          1,142 ms       0
+//
+// The slice costs 27% of batch drain here, and that is the intended trade
+// rather than a regression. This workload is ~98% batch, so the two slots
+// reserved per instance (fraction 0.2 of a budget of 10) sit idle nearly all
+// the time: batch runs at 8 concurrent instead of 10 and the reservation buys
+// nothing back, because there is almost no interactive work to protect.
+//
+// Note what the soak does NOT show: interactive p50 barely moves. That is the
+// whole of BUG-4 in one line. This scenario never saturates an instance long
+// enough for an interactive operation to be shut out, so the ordering-only
+// behaviour and the reservation look alike here. The unit test is what tells
+// them apart, by asserting an interactive attempt STARTS before any in-flight
+// batch attempt finishes. Do not use these numbers to judge the fix.
+//
+// Operators paying that 27% on a batch-dominated instance should set
+// interactiveSliceFraction to 0 for it, which RFE-1 made mean exactly zero.
+//
+// ---------------------------------------------------------------------------
 // REPRODUCED HERE — 2026-08-01, Phase P1 (provisioning service)
 // ---------------------------------------------------------------------------
 // Same sandbox, same shape, now running against the extracted code in this

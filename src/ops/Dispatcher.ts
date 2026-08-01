@@ -22,7 +22,11 @@ import {
   type ResolvedInstanceConfig,
   type SchedulingConfigInput,
 } from "../config/scheduling.js";
-import type { ClaimedOperation, OperationStoreApi } from "./OperationStore.js";
+import type {
+  ClaimedOperation,
+  InstanceAvailability,
+  OperationStoreApi,
+} from "./OperationStore.js";
 import { noopMetrics, type MetricsSink } from "@governance-connector-framework/core";
 // The claim-loop metric names left the framework at CP-5 with this code.
 import { OPS_METRICS as METRICS } from "./metrics.js";
@@ -149,6 +153,15 @@ export class Dispatcher {
   /** In-flight attempts per instance, so budgets reflect reality. */
   private readonly running = new Map<string, number>();
   /**
+   * In-flight *batch* attempts per instance.
+   *
+   * Counted separately because the batch cap is a cap on batch work, not on
+   * work in general: without this the reserved slice could be consumed by
+   * batch rows claimed in an earlier cycle and still running, and the
+   * reservation would hold only within a single cycle (BUG-4).
+   */
+  private readonly runningBatch = new Map<string, number>();
+  /**
    * Lanes held out of claiming until a backoff elapses.
    *
    * Keyed by lane rather than by operation id, and enforced by excluding the
@@ -251,10 +264,17 @@ export class Dispatcher {
 
         this.activeLanes.add(op.laneKey);
         this.running.set(op.instanceId, (this.running.get(op.instanceId) ?? 0) + 1);
+        if (op.priority === "batch") {
+          this.runningBatch.set(op.instanceId, (this.runningBatch.get(op.instanceId) ?? 0) + 1);
+        }
 
         const task = this.execute(op).finally(() => {
           this.activeLanes.delete(op.laneKey);
           this.running.set(op.instanceId, Math.max(0, (this.running.get(op.instanceId) ?? 1) - 1));
+          if (op.priority === "batch") {
+            this.runningBatch.set(
+                op.instanceId, Math.max(0, (this.runningBatch.get(op.instanceId) ?? 1) - 1));
+          }
         });
         this.inFlight.add(task);
         void task.finally(() => this.inFlight.delete(task));
@@ -274,7 +294,7 @@ export class Dispatcher {
    * first, offering the full budget lets a burst of interactive work use every
    * slot while a steady batch backlog still leaves the slice free.
    */
-  private computeAvailability(): Map<string, number> {
+  private computeAvailability(): Map<string, InstanceAvailability> {
     const ids = this.registry.registeredIds();
     if (ids.length === 0) return new Map();
 
@@ -283,18 +303,25 @@ export class Dispatcher {
     const offset = this.roundRobinCursor++ % ids.length;
     const ordered = [...ids.slice(offset), ...ids.slice(0, offset)];
 
-    const out = new Map<string, number>();
+    const out = new Map<string, InstanceAvailability>();
     for (const instanceId of ordered) {
       const runtime = this.configOf(instanceId);
       if (!runtime) continue;
 
       const inFlight = this.running.get(instanceId) ?? 0;
-      const free = runtime.mutationConcurrency - inFlight;
-      if (free <= 0) continue;
+      const totalFree = runtime.mutationConcurrency - inFlight;
+      if (totalFree <= 0) continue;
 
       if (!this.hasRateLimitTokens(instanceId, runtime)) continue;
 
-      out.set(instanceId, free);
+      // Batch is held to its own budget; interactive draws on the whole one.
+      // batchSlots is mutationConcurrency minus the reserved slice, so at a
+      // slice of zero -- or a budget of 1, where there is nothing to divide --
+      // this reduces to the old single-number behaviour exactly.
+      const batchInFlight = this.runningBatch.get(instanceId) ?? 0;
+      const batchFree = Math.max(0, Math.min(runtime.batchSlots - batchInFlight, totalFree));
+
+      out.set(instanceId, { batchFree, totalFree });
     }
     return out;
   }
@@ -398,7 +425,7 @@ export class Dispatcher {
    * sampling every cycle would put more load on the database than the work it
    * is measuring.
    */
-  private async sampleBacklog(available: ReadonlyMap<string, number>): Promise<void> {
+  private async sampleBacklog(available: ReadonlyMap<string, InstanceAvailability>): Promise<void> {
     if (this.backlogSampleCountdown-- > 0) return;
     this.backlogSampleCountdown = BACKLOG_SAMPLE_EVERY_N_CYCLES;
 

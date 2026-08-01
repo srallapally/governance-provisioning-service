@@ -9,7 +9,11 @@
 // never reaches for implementation details.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import type { OperationStoreApi, EnqueueInput } from "../../src/ops/OperationStore.js";
+import type {
+  OperationStoreApi,
+  EnqueueInput,
+  InstanceAvailability,
+} from "../../src/ops/OperationStore.js";
 
 export interface ContractHarness {
   store: OperationStoreApi;
@@ -34,7 +38,20 @@ function op(overrides: Partial<EnqueueInput> = {}): EnqueueInput {
   };
 }
 
-const ALL = (instances: Record<string, number>) => new Map(Object.entries(instances));
+/**
+ * Availability with no batch reservation: every slot open to either class.
+ *
+ * This is what the store saw before P1.5 gave batch its own cap, so every
+ * pre-existing case keeps asserting exactly what it asserted then. Cases that
+ * exercise the reservation build the map with SLICED instead.
+ */
+const ALL = (instances: Record<string, number>): Map<string, InstanceAvailability> =>
+    new Map(Object.entries(instances).map(([id, n]) => [id, { batchFree: n, totalFree: n }]));
+
+/** Availability with a batch cap below the total: the reserved-slice shape. */
+const SLICED = (
+    instances: Record<string, { batchFree: number; totalFree: number }>,
+): Map<string, InstanceAvailability> => new Map(Object.entries(instances));
 
 /**
  * Register the shared contract under `name`.
@@ -198,6 +215,74 @@ export function runOperationStoreContract(name: string, factory: HarnessFactory)
           attrs: { title: "staff" },
           idempotencyKey: "payload",
         });
+      });
+    });
+
+    describe("interactive slice (BUG-4)", () => {
+      it("caps batch rows at batchFree while interactive keeps the whole budget", async () => {
+        // Eight batch rows, budget 6, a slice of 2 reserved: batch may take 4.
+        for (let i = 0; i < 8; i++) {
+          await store.enqueue(op({ laneKey: `uid:b${i}`, idempotencyKey: `b${i}`, priority: "batch" }));
+        }
+        const claimed = await store.claimBatch(
+            10, [], SLICED({ "ad-prod": { batchFree: 4, totalFree: 6 } }));
+
+        expect(claimed).toHaveLength(4);
+        expect(claimed.every(c => c.priority === "batch")).toBe(true);
+      });
+
+      it("lets interactive fill the slice batch was held out of", async () => {
+        for (let i = 0; i < 8; i++) {
+          await store.enqueue(op({ laneKey: `uid:b${i}`, idempotencyKey: `b${i}`, priority: "batch" }));
+        }
+        for (let i = 0; i < 2; i++) {
+          await store.enqueue(op({ laneKey: `uid:i${i}`, idempotencyKey: `i${i}`, priority: "interactive" }));
+        }
+        const claimed = await store.claimBatch(
+            10, [], SLICED({ "ad-prod": { batchFree: 4, totalFree: 6 } }));
+
+        // The whole budget is used, but only 4 of it by batch.
+        expect(claimed).toHaveLength(6);
+        expect(claimed.filter(c => c.priority === "batch")).toHaveLength(4);
+        expect(claimed.filter(c => c.priority === "interactive")).toHaveLength(2);
+      });
+
+      it("lets interactive exceed batchFree, up to the full budget", async () => {
+        // The slice restricts batch. It does not restrict interactive to the
+        // remainder -- interactive answers to totalFree alone.
+        for (let i = 0; i < 6; i++) {
+          await store.enqueue(op({ laneKey: `uid:i${i}`, idempotencyKey: `i${i}`, priority: "interactive" }));
+        }
+        const claimed = await store.claimBatch(
+            10, [], SLICED({ "ad-prod": { batchFree: 1, totalFree: 5 } }));
+
+        expect(claimed).toHaveLength(5);
+        expect(claimed.every(c => c.priority === "interactive")).toBe(true);
+      });
+
+      it("claims no batch at all when the slice takes the whole budget", async () => {
+        for (let i = 0; i < 4; i++) {
+          await store.enqueue(op({ laneKey: `uid:b${i}`, idempotencyKey: `b${i}`, priority: "batch" }));
+        }
+        expect(await store.claimBatch(
+            10, [], SLICED({ "ad-prod": { batchFree: 0, totalFree: 4 } }))).toHaveLength(0);
+      });
+
+      it("behaves as before when there is no reservation", async () => {
+        // batchFree === totalFree is the pre-P1.5 shape, and RFE-1's fraction
+        // of zero resolves to exactly it. Batch must reach the full budget.
+        for (let i = 0; i < 6; i++) {
+          await store.enqueue(op({ laneKey: `uid:b${i}`, idempotencyKey: `b${i}`, priority: "batch" }));
+        }
+        expect(await store.claimBatch(10, [], ALL({ "ad-prod": 4 }))).toHaveLength(4);
+      });
+
+      it("treats a budget of 1 as shared, not reserved", async () => {
+        // computeInteractiveSlots returns 0 at a budget of 1, so batchSlots
+        // equals the budget and the single slot stays open to either class.
+        await store.enqueue(op({ laneKey: "uid:b0", idempotencyKey: "b0", priority: "batch" }));
+        expect(await store.claimBatch(
+            10, [], SLICED({ "ad-prod": { batchFree: 1, totalFree: 1 } }))).toHaveLength(1);
       });
     });
 

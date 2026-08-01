@@ -543,6 +543,27 @@ Tests:
 repo's log with the commit; framework's BUG-4 entry updated with the
 destination link.
 
+**Delivered.** 227 tests green, including the pg tier and six new contract
+cases that run against both stores. `InstanceAvailability` carries `batchFree`
+and `totalFree`; the dispatcher counts in-flight per class; the claim query
+gained a `class_rn` window so batch is cut at its own cap without moving
+interactive rows in `rn`. Core did not change.
+
+Both reservation tests were confirmed to fail with the fix reverted, while the
+three asserting unchanged behaviour still passed -- a test that passes either
+way would have proved nothing here, which is how the original defect hid.
+
+Measured cost, back to back on one box: batch drain falls from 1,803/s to
+1,322/s at 50k, 27%. That is the intended trade, not a regression -- the
+workload is ~98% batch, so the reserved slots idle and batch runs at 8
+concurrent instead of 10. Instances that are batch-dominated should set
+`interactiveSliceFraction` to 0, which RFE-1 made mean exactly zero.
+
+BUG-7 was found on the way and fixed here: `**/*.test.ts` was excluded from
+every tsconfig, so no test file was ever typechecked. The signature change
+above compiled at every call site and failed at runtime as a silently empty
+claim. `tsconfig.test.json` now covers them and CI runs `typecheck`.
+
 ## Phase P2: wiring module
 
 `src/provisioning/wiring.ts` constructing in order: dispatcher pg pool
