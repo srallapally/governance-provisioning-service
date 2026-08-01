@@ -129,18 +129,55 @@ renumbered away.
    2026-08-01: each application instance config is a JSON document stored in
    the IGA repository and handed to the engine as an object, `ApplicationConfig`.**
 
-   Consequence, and it is the load-bearing one: **this service does not read
-   instance configs from disk.** There is no config directory to scan, no
-   mounted volume, no file watcher. `ApplicationConfig` arrives as an
-   in-memory object and the service's job begins there — validate it, split
-   it, register the instance.
+   **Retrieval, settled 2026-08-01:** the service **pulls** the config rather
+   than receiving it pushed at boot. Given an application id, it asks an
+   `ApplicationConfigStore` and gets back an `ApplicationConfig`. The default
+   implementation reads a JSON file per application from a directory, chosen
+   for ease of testing; a store backed by the IGA repository replaces it later
+   without touching a call site.
 
-   Do not confuse this with the connector bundle directory, which is a
-   different thing and still a directory: the framework's `ExternalLoader`
-   scans it for `manifest.json` to load connector **code**. Instance
-   **configuration** no longer travels that path. Concretely, the service
-   calls `registerFactory` from the loader and `registerInstance` from an
-   `ApplicationConfig`, rather than letting the loader instantiate
+   ```ts
+   interface ApplicationConfigStore {
+       // Returns null when no application has that id.
+       get(applicationId: string): Promise<VersionedApplicationConfig | null>;
+   }
+
+   interface VersionedApplicationConfig {
+       config: ApplicationConfig;
+       // Opaque; changes whenever the document changes. The file store uses
+       // a content hash. Compared, never parsed.
+       version: string;
+   }
+   ```
+
+   This settles the boot-versus-runtime question by making it moot: a config
+   is whatever the store returns at the moment it is asked, so a change during
+   the process's life is expected rather than exceptional. Two consequences
+   follow that the implementation has to face rather than discover.
+
+   **It is a hot path.** "Retrieve when it performs the op" means one store
+   read per operation, and the recorded pg soak runs at ~1,168 ops/s. A file
+   read per operation at that rate is not free, and an IGA-repository-backed
+   store later would be far worse. Resolve the config **once per attempt**, at
+   claim time, not per SPI call, and cache by `(applicationId, version)`. The
+   file store's version is a content hash, so a stale cache entry is detected
+   by a `stat` and a re-read rather than by a timer.
+
+   **A version change invalidates a built connector instance.** The registry
+   caches the materialized instance and `ConnectorManager` hands out refcounted
+   leases with an idle TTL. When the version changes, the cached instance was
+   built from the old config and is wrong. Re-registration must therefore
+   dispose the old instance only after its outstanding leases drain — the same
+   discipline `stop()` uses at P2. Operations already in flight keep the
+   config they started with; that is the correct behaviour, because an attempt
+   deadline that changes underneath a running attempt would make the create
+   read-back window incoherent.
+
+   Do not confuse the config store with the connector bundle directory, which
+   is a different thing: the framework's `ExternalLoader` scans it for
+   `manifest.json` to load connector **code**. Concretely, the service calls
+   `registerFactory` from the loader and `registerInstance` from a config the
+   store returned, rather than letting the loader instantiate
    `manifest.instances`.
 
    The split, per CP-5's rule:
@@ -156,13 +193,11 @@ renumbered away.
    dropping them. That is the intended behaviour and P1's split must happen
    before the call, not after a caught error.
 
-   **Still open, and it changes the design rather than the details:** is
-   `ApplicationConfig` handed over once at boot, or can it arrive and change
-   while the process runs — a newly onboarded application, an edited budget?
-   If configs can arrive at runtime then registration is not a startup event,
-   and the service needs re-registration and instance-disposal semantics that
-   the plan does not currently describe. P7 assumes startup; see the note
-   there. Worth settling before P7, not urgent for P1.
+   Registration is therefore **not** a startup event. Nothing is registered
+   eagerly at boot; an application becomes known the first time an operation
+   names it. That matches the framework's own lazy lifecycle — CP-3 rejected
+   eager `initInstance` looping at boot for the same reason — and it means a
+   newly onboarded application needs no restart.
 5. **Deployment target** — not named in P0's list but implied by P5, which
    rejects "a k8s CronJob (new pod)" in favour of an in-process timer. That
    phrasing assumes Kubernetes. Confirmation is needed before P5's design is
@@ -274,15 +309,19 @@ record the choices instead.
   `src/ops/types.ts`), scheduling config (slice fraction, rate limits)
   composed on top of core's runtime config.
 - Instance config contract, settled at P0: one JSON per application instance,
-  stored in the IGA repository and handed to the engine as an
-  `ApplicationConfig` object — **not read from disk by this service**. Define
-  the type here and split it: identity and execution fields pass into
+  fetched by application id from an `ApplicationConfigStore` at the moment an
+  operation needs it. Define `ApplicationConfig`,
+  `VersionedApplicationConfig`, and the store interface here, plus the file
+  store as the default implementation — a directory of JSON documents, version
+  = content hash. Split the config: identity and execution fields pass into
   `registerInstance`; scheduling fields stay here, validated with the same
-  rules (slice floor only when fraction > 0, per RFE-1/CP-4). Split before
-  the call — core rejects the scheduling keys by name, so an unsplit config
-  passed through throws rather than degrading quietly. The connector bundle
-  directory is unaffected; the loader still supplies factories, it just no
-  longer instantiates `manifest.instances`.
+  rules (slice floor only when fraction > 0, per RFE-1/CP-4). Split before the
+  call — core rejects the scheduling keys by name, so an unsplit config passed
+  through throws rather than degrading quietly. Resolve once per attempt at
+  claim time and cache by `(applicationId, version)`; a version change
+  re-registers the instance after outstanding leases drain. The connector
+  bundle directory is unaffected; the loader still supplies factories, it just
+  no longer instantiates `manifest.instances`.
 - Bring the ops test infrastructure: `MemoryOperationStore`, the contract
   suite, `pg.ts`/`describeWithPg`, `scripts/test-pg.sh`, `soak.ts` with its
   recorded baseline header. Connector fixtures import from
@@ -429,21 +468,21 @@ interval, drain budget, connector directory. Note the split settled at P0 —
 this block is service-level and environment-sourced, whereas per-application
 instance settings arrive as `ApplicationConfig` objects and never appear here.
 
-Instance configs flow per the P1 contract; validation failures fail
-registration loudly rather than falling back to a default.
+Add the config-store block: which store implementation, and for the file
+store, the directory it reads.
 
-**Open, and it decides this phase's shape:** whether `ApplicationConfig` is
-handed over once at boot or can arrive and change at runtime. If runtime, then
-"fails registration at startup" is the wrong frame — registration becomes an
-operation with its own error path, and re-registering an existing instance
-needs defined semantics for the in-flight work and the leases it holds
-(`ConnectorManager` refcounts leases and evicts on idle TTL, so a naive
-re-register races them). Settle this before implementing.
+Instance configs flow per the P1 contract — pulled by application id, not
+loaded at boot. Registration is lazy, so a validation failure surfaces when
+an operation for that application is first dispatched rather than at startup.
+That is later than a startup check would catch it, and the compensation is
+that the failure must be unmistakable: fail the operation
+`REJECTED_PRE_DISPATCH` — it never reached the target — name the application
+and the offending setting, and do not retry a config that cannot parse.
 
-**Accept:** an instance whose `ApplicationConfig` carries
-`attemptDeadlineMs: -1` fails registration with the ceiling named, and the
-failure names the instance so an operator knows which application is
-misconfigured.
+**Accept:** an application whose config carries `attemptDeadlineMs: -1` fails
+with the ceiling named and the application id in the message; the operation
+records `REJECTED_PRE_DISPATCH` rather than being retried; a config edited to
+a valid value is picked up on the next operation with no restart.
 
 ## Phase P8: integrated soak
 
