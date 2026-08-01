@@ -47,7 +47,9 @@ per-application instance configs are pulled by application id from an
 `ApplicationConfigStore` at operation time, defaulting to a file store (P1 and
 P7 revised, registration is lazy rather than a boot step); and schema delivery
 is `scripts/db-setup.sh`, which rescoped P3 to the checks that genuinely need
-a real instance.
+a real instance. Deployment is a single Docker container, and outbound auth to
+IGA is OAuth client credentials. Two remain open: a real Cloud SQL instance,
+and inbound auth on the routes (P4 needs an issuer, JWKS URL, and audience).
 
 ## Commands
 
