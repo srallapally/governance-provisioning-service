@@ -209,14 +209,42 @@ export class Dispatcher {
     this.timer.unref?.();
   }
 
-  /** Stop claiming and wait for in-flight attempts to settle. */
-  async stop(): Promise<void> {
+  /**
+   * Stop claiming and wait for in-flight attempts to settle.
+   *
+   * `drainBudgetMs`, if given, bounds the wait: `stop()` returns once every
+   * attempt has settled or the budget elapses, whichever comes first. This
+   * does not cancel anything -- no attempt is ever given an `abortSignal`
+   * (see `optionsFor`), so a straggler keeps running in the background
+   * regardless of which one wins the race. `inFlightCount` stays accurate
+   * throughout for a caller that wants to know whether that happened.
+   *
+   * A bounded wait exists for one reason: this process has nothing above it
+   * that will wait indefinitely for a graceful exit. Whatever the deployment
+   * grants as a stop-grace-period arrives eventually as SIGKILL, and an
+   * unbounded `stop()` racing that clock is worse than one that gives up on
+   * its own terms and lets the caller proceed to close what it owns. A
+   * straggler left running loses its store connection when that happens
+   * (see `OperationStore` and `Dispatcher.finalize`/`safeRequeue`, both of
+   * which already tolerate a closed pool) and is left `RUNNING` -- exactly
+   * what `reapStale` exists to recover, not a new failure mode this
+   * introduces.
+   *
+   * Omitting the budget preserves the original unbounded behaviour, which
+   * every existing caller (all current tests) relies on.
+   */
+  async stop(opts?: { drainBudgetMs?: number }): Promise<void> {
     this.stopped = true;
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = undefined;
     }
-    await Promise.allSettled([...this.inFlight]);
+    const settled = Promise.allSettled([...this.inFlight]);
+    if (opts?.drainBudgetMs === undefined) {
+      await settled;
+      return;
+    }
+    await Promise.race([settled, this.sleep(opts.drainBudgetMs)]);
   }
 
   /** Attempts currently executing. */

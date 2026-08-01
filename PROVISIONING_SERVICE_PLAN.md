@@ -593,6 +593,71 @@ degraded, and an unhandled rejection anywhere in the claim loop is an outage.
 fake op drains then exits; a bad client secret fails `start()` with the token
 endpoint's status in the message rather than surfacing later.
 
+**Delivered.** 252 tests green (was 227), 70 of them the pg tier. `npm run
+build`, `typecheck` (both configs), and `lint` all clean. Verified from a
+clean `npm ci`, and separately by running the real entrypoint
+(`npx tsx src/index.ts`) as its own process and sending it a real SIGTERM —
+started, answered, exited within the wait window, no force-kill needed.
+
+Four things turned out underspecified or wrong once building against them,
+recorded here rather than left silent:
+
+- **`Dispatcher.stop()` had no bounded-wait parameter.** It was
+  `await Promise.allSettled([...this.inFlight])`, unbounded. Extended to
+  `stop(opts?: { drainBudgetMs?: number })` rather than wrapped externally in
+  `wiring.ts` -- `Dispatcher` never sets an `abortSignal` on an attempt (grep
+  confirms zero occurrences), so neither approach can cancel anything, only
+  stop waiting for it; extending the component that already owns the
+  `inFlight` set keeps the budget testable with the existing
+  `MemoryOperationStore`/`FakeConnector` harness and is the only place a real
+  future cancellation upgrade could live. Additive: no existing caller passes
+  an argument.
+- **Nothing calls `ApplicationRegistrar.ensure()`.** `Dispatcher` reads an
+  instance's config straight from the registry; an application nothing ever
+  registered is invisible to `computeAvailability` -- not rejected, just
+  silently never claimed. Registration-on-demand belongs at the admission
+  boundary (P4: a route handler calls it, synchronously, before
+  `store.enqueue(...)`), which does not exist yet. `wiring.ts` exports
+  `ensureApplication(applicationId)` as that hook, both for P4 to call later
+  and for this phase's own tests to simulate "an operation named this
+  application" before enqueueing directly against the store.
+- **`ConnectorManager.shutdown()` (framework code) has no refcount guard.**
+  Unlike its own `evict()`, it disposes every live instance unconditionally.
+  Plausibly intentional -- the same "caller drains before disposing" contract
+  `ApplicationRegistrar.drainLeases()` already assumes -- so this is not filed
+  as a framework defect. `stop()` treats it as a contract instead: drain the
+  dispatcher, then poll `inFlightCount` through a short second-stage grace
+  window before calling `manager.shutdown()`, rather than calling it the
+  instant the drain budget gives up waiting.
+- **Two real-Postgres test files cannot run concurrently.** Vitest's default
+  is to run files in parallel; `test/contract/operation-store.pg.test.ts` and
+  the new `test/provisioning/wiring.test.ts` both call `resetOperations()`
+  (a `TRUNCATE`) against the *same* database in their own `beforeEach`. Run
+  side by side, one file's reset can wipe rows the other is mid-test on --
+  which surfaced as "operation was never claimed", a failure that looks like
+  a dispatcher defect and is a test-isolation gap. `vitest.config.ts` now sets
+  `fileParallelism: false`; the in-memory suites cost nothing to serialize
+  alongside, and the whole suite still runs in under ten seconds.
+
+Two implementation choices worth recording alongside those:
+
+- The fixture connector `wiring.test.ts` needs (armed to hang, to exercise
+  the bounded drain against a genuinely in-flight attempt) is a small
+  **committed** module under `test/fixtures/connectors/fake/`, not generated
+  per-test into `os.tmpdir()` the way the framework's own
+  `ExternalLoader.test.ts` does it. That fixture imports
+  `@governance-connector-framework/core/testing`, and Node's ESM resolution
+  for a bare specifier walks up `node_modules` from the *importing file's*
+  location -- a tmpdir has no ancestor `node_modules` to find. Living inside
+  this repo's tree is what makes the import resolve.
+- `wiring.ts` does not export its internal `OperationStore` for the tests (or
+  P4) to enqueue through. P4 is expected to build its own `OperationStore`
+  over its own pool -- distinct from the dispatcher's, per the "separate from
+  any API pool" instruction this phase started from -- so the tests do the
+  same: a second pool, opened alongside the dispatcher's own, doubles as both
+  the assertion connection and the enqueue path a route handler will
+  eventually have.
+
 ## Phase P3: verify the schema against the target environment
 
 Rescoped at P0. The original phase proved the schema *works*; that is
