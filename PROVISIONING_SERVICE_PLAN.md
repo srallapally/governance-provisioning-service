@@ -98,12 +98,23 @@ not assumed here.
 
 These are the P0 discovery items with no answer available from this session.
 Each blocks a later phase and needs an operator answer before that phase runs.
+Numbering is stable; an item answered later is marked in place rather than
+renumbered away.
 
-1. **Metrics stack** — blocks P6, which says "implement `MetricsSink` against
-   the P0-discovered stack." Nothing was discovered. `MetricsSink` is an
-   interface with `counter`/`gauge`/`histogram` and the framework bundles no
-   client library, so the binding is open: Prometheus scrape, OTLP push, or a
-   vendor agent. P6 cannot start without this.
+1. ~~**Metrics stack**~~ — **ANSWERED 2026-08-01: there is no metrics stack.**
+   No Prometheus, no OTLP collector, no vendor agent. One may be added later.
+
+   Consequence: "the P0-discovered stack" is the empty set, so P6's original
+   acceptance — "visible in the dev stack during a manual fake-connector run"
+   — is unsatisfiable as written. **P6 is revised below** rather than left to
+   fail its own acceptance.
+
+   The shape this settles on: `MetricsSink` stays an interface, which is the
+   framework's design and the reason it bundles no client library. The service
+   ships a stdout sink and an in-memory snapshot sink. Adding Prometheus later
+   is one more implementation plus a scrape config, with no call site moved.
+   **No metrics client library becomes a dependency until a stack exists to
+   talk to.**
 2. **Dev Cloud SQL instance** — blocks P3. The plan names "dev Cloud SQL" and
    P3's acceptance needs a `DATABASE_URL` at a scratch database on it.
    Connection details, auth method (IAM vs password, proxy vs direct), and
@@ -342,12 +353,35 @@ work once.
 
 ## Phase P6: metrics binding
 
-Implement `MetricsSink` against the P0-discovered stack. Surface: backlog
-depth and oldest-pending age per instance (primary operator signals), outcome
-counts, attempt latency, breaker transitions, event-loop lag, live instances,
-pool in-use, partition-drop refusals.
+Revised at P0: there is no metrics stack to bind to. The instrumentation is
+still worth having — the surface below is what an operator needs to answer
+"is provisioning falling behind" — so the phase keeps its content and changes
+only where the numbers go.
 
-**Accept:** visible in the dev stack during a manual fake-connector run.
+Surface: backlog depth and oldest-pending age per instance (primary operator
+signals), outcome counts, attempt latency, breaker transitions, event-loop
+lag, live instances, pool in-use, partition-drop refusals.
+
+Implement two `MetricsSink`s and nothing else:
+
+- a **stdout sink** emitting one structured JSON event per measurement, so
+  metrics land wherever logs already land;
+- an **in-memory snapshot sink** holding current values, readable in-process.
+
+No metrics client library becomes a dependency. When a stack appears it is a
+third implementation plus deployment config, and no call site moves — which is
+exactly why `MetricsSink` is an interface rather than a concrete exporter.
+
+Event-loop lag is the one measurement with a decision riding on it: the
+sidecar split has been deferred since CP-1 waiting on production numbers, and
+P8 is where that dataset starts. Emitting it to stdout is enough to begin
+collecting; it does not need a stack.
+
+**Accept:** a manual fake-connector run emits every metric named above on
+stdout, and the snapshot sink's backlog depth and oldest-pending age match a
+direct SQL query against the operation table — the query is the oracle, since
+there is no dashboard to eyeball. Deferred: binding to a real stack, and the
+sidecar threshold that waits on one.
 
 ## Phase P7: configuration
 

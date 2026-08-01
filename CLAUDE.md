@@ -41,7 +41,8 @@ has an input; Phase P2 replaces it with the wiring module.
 
 Phases P1 through P8 are described in `PROVISIONING_SERVICE_PLAN.md`. Read the
 P0 findings section at the top of that file before starting any of them — six
-discovery items could not be determined and each blocks a specific phase.
+discovery items had no answer at P0 and each blocks a specific phase. One has
+since been answered: there is no metrics stack, and P6 was revised to suit.
 
 ## Commands
 
