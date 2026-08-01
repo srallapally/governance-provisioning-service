@@ -72,7 +72,7 @@ first commit than to retrofit it over a dispatcher.
 | SIGTERM handling | `wiring.stop()`: stop claiming, drain in-flight to a budget, release leases, close pools | P2 |
 | Deployment | A single Docker container, not Kubernetes | P2/P5 |
 | Outbound auth to IGA | OAuth client credentials, ported from the framework's `OAuthTokenProvider`; lazy refresh, fetched once at boot | P2/P7 |
-| Inbound auth on routes | **Undetermined** — needs issuer, JWKS URL, audience | P4 |
+| Inbound auth on routes | Bearer token from the same OAuth authority; port the framework's `auth.ts`. Needs issuer, JWKS URL, audience | P4 |
 | Instance config location | JSON in the IGA repo, pulled by application id; file store by default | P1/P7 |
 | Schema delivery | `scripts/db-setup.sh`, run out of band; inspects the target to choose schema vs migration | P3 |
 
@@ -264,18 +264,45 @@ renumbered away.
    authenticate with. The file store needs none of it, so P1 and P1.5 are
    unaffected; the token provider is constructed at P2 and configured at P7.
 
-   **Inbound (still open):** CP-1's "new routes sit behind existing service
-   auth" concerns callers authenticating *to* this service, which is the
-   opposite direction and is not settled by the above. A client id and secret
-   let this service *get* a token; validating one that arrives on a request
-   needs an issuer, a JWKS URL, and an expected audience.
+   **Inbound — ANSWERED 2026-08-01: the same client-credentials access
+   token.** Callers present a bearer token from the same OAuth authority this
+   service uses outbound, and this service validates it. One authority, both
+   directions.
 
-   If IGA is the only caller and issues those tokens from the same authority,
-   the natural answer is to validate bearer tokens from that issuer using the
-   framework's `packages/websocket/src/security/auth.ts` (JWKS, algorithm
-   allowlist, iss/aud checks, replay cache), ported on the same terms. That
-   needs confirming, and it needs the three values above — none of which the
-   client-credentials config supplies. P4 is where it bites.
+   P4 ports `packages/websocket/src/security/auth.ts` on the same terms as the
+   token provider — JWKS fetch and cache, algorithm allowlist, `iss`/`aud`
+   checks, clock skew, replay cache. It is written and tested; it just has no
+   server mounting it today.
+
+   **The fork that decides the implementation: are the authority's access
+   tokens JWTs or opaque?** JWKS validation needs a JWT. If IGA's authority
+   issues opaque tokens, no amount of JWKS configuration will verify one and
+   P4 must call the authority's introspection endpoint (RFC 7662) instead —
+   a network round trip per request, which wants a short-TTL cache keyed by
+   token hash. Decide by decoding one token: three dot-separated base64
+   segments means JWT. Everything below assumes JWT.
+
+   **Configuration still needed** — the client-credentials block does not
+   supply any of it: issuer, JWKS URL (usually discoverable at
+   `{issuer}/.well-known/openid-configuration`), and the expected audience.
+
+   **One security consequence to settle deliberately rather than inherit.**
+   If the token this service *sends* to IGA is accepted by this service, then
+   a token leaked or logged anywhere in the IGA call path is also a credential
+   against the provisioning API, and any holder of that client's token can
+   enqueue provisioning operations. The `aud` claim is what separates the two:
+
+   - **Preferred — a distinct audience for this service.** Callers request a
+     token whose `aud` names the provisioning service; this service rejects
+     anything else. Its own outbound token, audienced at IGA, is then useless
+     against it. This is a change on the authority, not in code.
+   - **Fallback — no distinct audience.** Validate `iss`, expiry, signature,
+     and a required scope. Weaker: it accepts any token that authority issued
+     to that client, for any purpose.
+
+   Either is implementable; the first is worth asking the IGA authority's
+   owner for before P4, because retrofitting an audience after callers exist
+   means coordinating a change on both sides.
 
 ### Deferred to the phase that needs them
 
@@ -527,6 +554,21 @@ is the honest deadline for having one.
 `openapi.yaml` (now owned here for the provisioning surface) wins over this
 text.
 
+Auth, settled at P0: every route sits behind a bearer token from the same
+OAuth authority the service uses outbound. Port
+`packages/websocket/src/security/auth.ts` — JWKS fetch and cache, algorithm
+allowlist, `iss`/`aud`/expiry checks, clock skew, replay cache — rather than
+writing a second one. Mount it in front of every route including the status
+endpoint: an operationId is a capability, and an unauthenticated reader could
+enumerate provisioning activity across applications.
+
+Confirm before building that the authority issues **JWTs** rather than opaque
+tokens; opaque means introspection (RFC 7662) with a short-TTL cache instead
+of JWKS, which is a different implementation. See finding 6.
+
+`openapi.yaml` already declares `bearerAuth` as the global security scheme,
+so no change there.
+
 Mutations (create/update/delete/add-values/remove-values): synchronous
 validation (schema, object class, uid for uid-keyed ops, naming attribute for
 create) with 400 while the caller waits; `priority` from caller provenance,
@@ -542,7 +584,11 @@ resume on drain; no buffering.
 
 **Accept:** route tests with `FakeConnector` through the real loader:
 202→SUCCEEDED with Uid; 429 with depth at cap; ADD_VALUES enqueue; 10k-object
-search with bounded memory, asserted by observation not vibes.
+search with bounded memory, asserted by observation not vibes. Auth: no token
+is 401 on every route including status; a token signed by an unknown key is
+401; an expired token is 401; and — when a distinct audience is configured —
+a token audienced at IGA rather than at this service is 401, which is the
+test that proves the outbound credential is not also an inbound one.
 
 ## Phase P5: partition maintenance in-process
 
@@ -616,6 +662,14 @@ and is never logged — the framework's redaction helper is the precedent, and
 a token endpoint error must not echo the request body. Required only when the
 configured store is the IGA-backed one; the file store leaves them unset,
 which is what keeps local runs and CI free of credentials.
+
+Add the inbound-auth block: `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_AUDIENCE`,
+and the algorithm allowlist. Same authority as the IGA block, opposite
+direction. `AUTH_AUDIENCE` is not optional — leaving it unset is the fallback
+posture described in finding 6, where any token that authority issued to the
+client is accepted, so it must be an explicit choice rather than an omission
+nobody noticed. If it is deliberately unset, require a scope instead and log
+the weaker posture once at boot.
 
 Deployment is a single Docker container, so every setting here arrives as an
 environment variable and there is no config map or mounted file to reconcile
