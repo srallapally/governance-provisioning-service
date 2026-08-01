@@ -633,7 +633,7 @@ describe("reaper (BUG-2)", () => {
         const { id } = await enqueue({ idempotencyKey: "reap-d", opType: "DELETE", uid: created.uid });
 
         // Claim it, then strand it as a dead replica would.
-        await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+        await store.claimBatch(10, [], new Map([["ad-prod", { batchFree: 5, totalFree: 5 }]]));
         orphan();
 
         dispatcher = new Dispatcher({
@@ -654,7 +654,7 @@ describe("reaper (BUG-2)", () => {
         const createsBefore = connector.controls.countOf("create");
 
         const { id } = await enqueue({ idempotencyKey: "reap-c", nameAttrValue: "half", attrs: { __NAME__: "half" } });
-        await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+        await store.claimBatch(10, [], new Map([["ad-prod", { batchFree: 5, totalFree: 5 }]]));
         orphan();
 
         dispatcher = new Dispatcher({
@@ -675,7 +675,7 @@ describe("reaper (BUG-2)", () => {
     it("leaves a live attempt alone", async () => {
         setup();
         await enqueue({ idempotencyKey: "live", nameAttrValue: "l", attrs: { __NAME__: "l" } });
-        await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+        await store.claimBatch(10, [], new Map([["ad-prod", { batchFree: 5, totalFree: 5 }]]));
 
         // Freshly claimed: reclaiming it would put two dispatchers on one
         // mutation, which is worse than the stranded row it would be fixing.
@@ -870,5 +870,147 @@ describe("why the idempotentDelta gate exists", () => {
 
         expect(connector.controls.target.accounts.get(created.uid)!["groups"])
             .toEqual(["finance"]);
+    });
+});
+describe("interactive slice (BUG-4)", () => {
+    /**
+     * The discriminating test.
+     *
+     * Deliberately not a latency comparison. The claim query already orders
+     * interactive rows first, which on its own produces a large p50 separation
+     * under load -- the Phase 11 soak measured 825ms against 12,775ms with no
+     * reservation in existence. Ordering decides who takes the next free slot;
+     * a reservation decides whether a slot is free at all. Only the second
+     * survives sustained batch saturation, and only this assertion can tell
+     * them apart.
+     */
+    it("starts an interactive op before any in-flight batch attempt finishes", async () => {
+        // Budget 5, default slice 0.2 -> 1 slot reserved, 4 available to batch.
+        setup({ runtime: { mutationConcurrency: 5 } });
+        connector.controls.latency(120);
+
+        const order: string[] = [];
+        const realCreate = connector.create!.bind(connector);
+        (connector as any).create = async (...args: any[]) => {
+            const name = String((args[1] as any).__NAME__);
+            order.push(`start:${name}`);
+            const r = await realCreate(...(args as [any, any, any]));
+            order.push(`end:${name}`);
+            return r;
+        };
+
+        // Saturate with batch work: more rows than the whole budget.
+        for (let i = 0; i < 10; i++) {
+            await enqueue({ idempotencyKey: `b${i}`, priority: "batch",
+                nameAttrValue: `batch${i}`, attrs: { __NAME__: `batch${i}` } });
+        }
+        await dispatcher.runCycle();
+
+        // Batch is now running and holding slots. The interactive op arrives
+        // mid-flight, exactly as a helpdesk write would.
+        await enqueue({ idempotencyKey: "i0", priority: "interactive",
+            nameAttrValue: "urgent", attrs: { __NAME__: "urgent" } });
+        await dispatcher.runCycle();
+        await drain();
+
+        const interactiveStart = order.indexOf("start:urgent");
+        const firstBatchEnd = order.findIndex(e => e.startsWith("end:batch"));
+
+        expect(interactiveStart).toBeGreaterThanOrEqual(0);
+        expect(firstBatchEnd).toBeGreaterThanOrEqual(0);
+        // Without the reservation the interactive op cannot start until a
+        // batch attempt releases a slot, so this index comparison inverts.
+        expect(interactiveStart).toBeLessThan(firstBatchEnd);
+    });
+
+    it("never runs more batch attempts at once than the slice allows", async () => {
+        setup({ runtime: { mutationConcurrency: 5 } });
+        connector.controls.latency(60);
+
+        let inFlight = 0;
+        let peak = 0;
+        const realCreate = connector.create!.bind(connector);
+        (connector as any).create = async (...args: any[]) => {
+            inFlight++; peak = Math.max(peak, inFlight);
+            try { return await realCreate(...(args as [any, any, any])); }
+            finally { inFlight--; }
+        };
+
+        for (let i = 0; i < 12; i++) {
+            await enqueue({ idempotencyKey: `b${i}`, priority: "batch",
+                nameAttrValue: `batch${i}`, attrs: { __NAME__: `batch${i}` } });
+        }
+        await drain();
+
+        // batchSlots = 5 - ceil(5 * 0.2) = 4.
+        expect(peak).toBeLessThanOrEqual(4);
+        expect(peak).toBeGreaterThan(0);
+    });
+
+    it("lets interactive work use the whole budget when batch is idle", async () => {
+        setup({ runtime: { mutationConcurrency: 5 } });
+        connector.controls.latency(60);
+
+        let inFlight = 0;
+        let peak = 0;
+        const realCreate = connector.create!.bind(connector);
+        (connector as any).create = async (...args: any[]) => {
+            inFlight++; peak = Math.max(peak, inFlight);
+            try { return await realCreate(...(args as [any, any, any])); }
+            finally { inFlight--; }
+        };
+
+        for (let i = 0; i < 8; i++) {
+            await enqueue({ idempotencyKey: `i${i}`, priority: "interactive",
+                nameAttrValue: `urgent${i}`, attrs: { __NAME__: `urgent${i}` } });
+        }
+        await drain();
+
+        // The slice caps batch, not interactive: interactive reaches 5.
+        expect(peak).toBe(5);
+    });
+
+    it("gives batch the whole budget at a slice fraction of zero (RFE-1)", async () => {
+        setup({ runtime: { mutationConcurrency: 4 } });
+        connector.controls.latency(60);
+        // Rebuild with an explicit zero slice for this instance.
+        dispatcher = new Dispatcher({
+            store, manager, registry,
+            scheduling: () => ({ interactiveSliceFraction: 0 }),
+            config: { backoffBaseMs: 10, backoffMaxMs: 20, logger: { error: () => {} } },
+        });
+
+        let inFlight = 0;
+        let peak = 0;
+        const realCreate = connector.create!.bind(connector);
+        (connector as any).create = async (...args: any[]) => {
+            inFlight++; peak = Math.max(peak, inFlight);
+            try { return await realCreate(...(args as [any, any, any])); }
+            finally { inFlight--; }
+        };
+
+        for (let i = 0; i < 8; i++) {
+            await enqueue({ idempotencyKey: `b${i}`, priority: "batch",
+                nameAttrValue: `batch${i}`, attrs: { __NAME__: `batch${i}` } });
+        }
+        await drain();
+
+        // Reserving nothing means batch may fill the budget, which is what an
+        // operator asking for zero asked for.
+        expect(peak).toBe(4);
+    });
+
+    it("shares the single slot at a budget of 1", async () => {
+        setup({ runtime: { mutationConcurrency: 1 } });
+        connector.controls.latency(20);
+
+        for (let i = 0; i < 3; i++) {
+            await enqueue({ idempotencyKey: `b${i}`, priority: "batch",
+                nameAttrValue: `batch${i}`, attrs: { __NAME__: `batch${i}` } });
+        }
+        await drain();
+
+        // Nothing to divide, so batch is not locked out of the only slot.
+        expect(connector.controls.countOf("create")).toBe(3);
     });
 });

@@ -19,13 +19,16 @@ import type {
   OperationType,
   PendingCounts,
   ReapResult,
+  InstanceAvailability,
 } from "../../src/ops/OperationStore.js";
+// The row vocabulary left core with the dispatcher at CP-5; only the caller's
+// scheduling class still comes from the framework.
 import type {
   OperationOutcome,
   OperationPendingStatus,
-  OperationPriority,
   OperationStatus,
-} from "@governance-connector-framework/core";
+} from "../../src/ops/types.js";
+import type { OperationPriority } from "@governance-connector-framework/core";
 
 const TERMINAL: ReadonlySet<string> = new Set<OperationOutcome>([
   "SUCCEEDED",
@@ -129,14 +132,20 @@ export class MemoryOperationStore implements OperationStoreApi {
   async claimBatch(
       limit: number,
       activeLaneKeys: readonly string[],
-      perInstanceAvailable: ReadonlyMap<string, number>,
+      perInstanceAvailable: ReadonlyMap<string, InstanceAvailability>,
   ): Promise<ClaimedOperation[]> {
     if (limit <= 0) return [];
 
     const busy = new Set(activeLaneKeys);
     const remaining = new Map<string, number>();
-    for (const [instanceId, n] of perInstanceAvailable) {
-      if (n > 0) remaining.set(instanceId, n);
+    // Batch rows answer to a second, tighter cap. Mirrors batch_cap and
+    // class_rn in the SQL; the contract suite holds both to it.
+    const batchRemaining = new Map<string, number>();
+    for (const [instanceId, a] of perInstanceAvailable) {
+      if (a.totalFree > 0) {
+        remaining.set(instanceId, a.totalFree);
+        batchRemaining.set(instanceId, Math.max(0, Math.min(a.batchFree, a.totalFree)));
+      }
     }
     if (remaining.size === 0) return [];
 
@@ -175,6 +184,14 @@ export class MemoryOperationStore implements OperationStoreApi {
       const left = remaining.get(row.instanceId) ?? 0;
       if (left <= 0) continue;
       if (takenLanes.has(row.laneKey)) continue;
+
+      // A batch row past the cap is skipped, not promoted: the slot it would
+      // take is reserved for interactive work that has not arrived yet.
+      const batchLeft = batchRemaining.get(row.instanceId) ?? 0;
+      if (row.priority === "batch") {
+        if (batchLeft <= 0) continue;
+        batchRemaining.set(row.instanceId, batchLeft - 1);
+      }
 
       const priorStatus = row.status as OperationPendingStatus;
       row.status = "RUNNING";

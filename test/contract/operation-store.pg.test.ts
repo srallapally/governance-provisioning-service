@@ -54,7 +54,7 @@ describeWithPg(probe, "OperationStore against Postgres", () => {
       });
     }
 
-    const avail = new Map([["ad-prod", lanes]]);
+    const avail = new Map([["ad-prod", { batchFree: lanes, totalFree: lanes }]]);
     const [a, b, c] = await Promise.all([
       store.claimBatch(lanes, [], avail),
       store.claimBatch(lanes, [], avail),
@@ -110,7 +110,7 @@ describeWithPg(probe, "OperationStore against Postgres", () => {
       idempotencyKey: "gate-1",
       nameAttrValue: "gate",
     });
-    await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+    await store.claimBatch(10, [], new Map([["ad-prod", { batchFree: 5, totalFree: 5 }]]));
     await store.deferForReadback(id, new Date(Date.now() + 3_600_000));
 
     const refused = await pool.query("SELECT drop_operations_partition(current_date) AS dropped");
@@ -142,7 +142,7 @@ describeWithPg(probe, "OperationStore against Postgres", () => {
     };
 
     await read();                                                   // PENDING
-    await store.claimBatch(10, [], new Map([["ad-prod", 5]]));
+    await store.claimBatch(10, [], new Map([["ad-prod", { batchFree: 5, totalFree: 5 }]]));
     await read();                                                   // RUNNING
     await store.deferForReadback(id, new Date(Date.now() + 60_000));
     await read();                                                   // AWAITING_READBACK
@@ -169,7 +169,7 @@ describeWithPg(probe, "OperationStore against Postgres", () => {
         uid: `r${i}`,
       });
     }
-    await store.claimBatch(10, [], new Map([["ad-prod", 10]]));
+    await store.claimBatch(10, [], new Map([["ad-prod", { batchFree: 10, totalFree: 10 }]]));
 
     // Three replicas reaping at once; the advisory lock means the losers do
     // nothing rather than double-reaping.

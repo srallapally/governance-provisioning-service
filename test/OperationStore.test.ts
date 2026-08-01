@@ -212,7 +212,10 @@ describe("enqueue", () => {
 });
 
 describe("claimBatch", () => {
-    const avail = new Map([["ad-prod", 3], ["ldap", 2]]);
+    const avail = new Map([
+        ["ad-prod", { batchFree: 3, totalFree: 3 }],
+        ["ldap", { batchFree: 2, totalFree: 2 }],
+    ]);
 
     it("uses FOR UPDATE SKIP LOCKED and marks rows RUNNING", async () => {
         await store.claimBatch(50, [], avail);
@@ -238,16 +241,41 @@ describe("claimBatch", () => {
         expect(text).toContain("WHERE rn <= cap");
     });
 
-    it("binds instance ids, caps, lanes, and limit as parameters", async () => {
-        await store.claimBatch(50, ["uid:__ACCOUNT__:abc"], avail);
+    it("binds instance ids, both caps, lanes, and limit as parameters", async () => {
+        const sliced = new Map([
+            ["ad-prod", { batchFree: 1, totalFree: 3 }],
+            ["ldap", { batchFree: 2, totalFree: 2 }],
+        ]);
+        await store.claimBatch(50, ["uid:__ACCOUNT__:abc"], sliced);
         const q = pool.find("UPDATE operations")!;
-        expect(q.values).toEqual([["ad-prod", "ldap"], [3, 2], ["uid:__ACCOUNT__:abc"], 50]);
+        expect(q.values).toEqual([
+            ["ad-prod", "ldap"],
+            [3, 2],
+            [1, 2],
+            ["uid:__ACCOUNT__:abc"],
+            50,
+        ]);
         expect(q.text).not.toContain("ad-prod");
+    });
+
+    it("clamps the batch cap to the total, never above it", async () => {
+        // batchFree above totalFree would let a cap that is meant to restrict
+        // batch work read as permission to exceed the instance budget.
+        await store.claimBatch(50, [], new Map([["ad-prod", { batchFree: 99, totalFree: 4 }]]));
+        expect(pool.find("UPDATE operations")!.values[2]).toEqual([4]);
+    });
+
+    it("caps batch rows by their own rank, leaving interactive on the total", async () => {
+        await store.claimBatch(50, [], avail);
+        const text = pool.find("UPDATE operations")!.text;
+        expect(text).toContain("PARTITION BY instance_id, priority");
+        expect(text).toContain("AS class_rn");
+        expect(text).toContain("priority <> 'batch' OR class_rn <= batch_cap");
     });
 
     it("excludes active lanes", async () => {
         await store.claimBatch(50, ["lane-a"], avail);
-        expect(pool.find("UPDATE operations")!.text).toContain("NOT (o.lane_key = ANY($3::text[]))");
+        expect(pool.find("UPDATE operations")!.text).toContain("NOT (o.lane_key = ANY($4::text[]))");
     });
 
     it("collapses each lane to one row before applying the per-instance cap", async () => {
@@ -263,12 +291,15 @@ describe("claimBatch", () => {
     });
 
     it("drops instances with no available slots", async () => {
-        await store.claimBatch(50, [], new Map([["ad-prod", 0], ["ldap", 4]]));
+        await store.claimBatch(50, [], new Map([
+            ["ad-prod", { batchFree: 0, totalFree: 0 }],
+            ["ldap", { batchFree: 4, totalFree: 4 }],
+        ]));
         expect(pool.find("UPDATE operations")!.values[0]).toEqual(["ldap"]);
     });
 
     it("skips the query entirely when nothing can be claimed", async () => {
-        expect(await store.claimBatch(50, [], new Map([["ad-prod", 0]]))).toEqual([]);
+        expect(await store.claimBatch(50, [], new Map([["ad-prod", { batchFree: 0, totalFree: 0 }]]))).toEqual([]);
         expect(await store.claimBatch(0, [], avail)).toEqual([]);
         expect(pool.queries).toHaveLength(0);
     });

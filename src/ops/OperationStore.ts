@@ -148,7 +148,12 @@ function isOperationId(id: string): boolean {
 
 const CLAIM_SQL = `
 WITH caps AS (
-    SELECT * FROM unnest($1::text[], $2::int[]) AS t(instance_id, cap)
+    -- Two caps per instance. cap bounds the cycle for the instance; batch_cap
+    -- bounds the batch rows within it. Interactive rows answer to cap alone,
+    -- which is the asymmetry CP-2 locked: interactive may use the whole
+    -- budget, batch may not (BUG-4).
+    SELECT * FROM unnest($1::text[], $2::int[], $3::int[])
+        AS t(instance_id, cap, batch_cap)
 ),
 blocked_lanes AS (
     -- Lanes occupied by work that is not claimable right now: an attempt in
@@ -174,6 +179,7 @@ lane_leaders AS (
            o.instance_id,
            o.status,
            c.cap,
+           c.batch_cap,
            row_number() OVER (
                PARTITION BY o.instance_id, o.lane_key
                ORDER BY (o.priority = 'interactive') DESC, o.created_at
@@ -188,7 +194,7 @@ lane_leaders AS (
             -- rather than be overtaken.
             OR (o.status = 'AWAITING_READBACK' AND o.not_before <= now())
           )
-      AND NOT (o.lane_key = ANY($3::text[]))
+      AND NOT (o.lane_key = ANY($4::text[]))
       AND NOT EXISTS (
             SELECT 1 FROM blocked_lanes b
             WHERE b.instance_id = o.instance_id AND b.lane_key = o.lane_key
@@ -203,10 +209,17 @@ ranked AS (
            priority,
            status,
            cap,
+           batch_cap,
            row_number() OVER (
                PARTITION BY instance_id
                ORDER BY (priority = 'interactive') DESC, created_at
-           ) AS rn
+           ) AS rn,
+           -- Rank within the class, so batch rows can be cut at batch_cap
+           -- without disturbing where interactive rows sit in rn.
+           row_number() OVER (
+               PARTITION BY instance_id, priority
+               ORDER BY created_at
+           ) AS class_rn
     FROM lane_leaders
     WHERE lane_rn = 1
 ),
@@ -214,8 +227,12 @@ picked AS (
     SELECT id, created_at
     FROM ranked
     WHERE rn <= cap
+      -- Batch rows beyond the cap are dropped rather than promoted: the
+      -- slice they would have taken is being held for interactive work that
+      -- has not arrived yet. Under-filling the cycle is the point.
+      AND (priority <> 'batch' OR class_rn <= batch_cap)
     ORDER BY (priority = 'interactive') DESC, created_at
-    LIMIT $4
+    LIMIT $5
 ),
 locked AS (
     -- prior_status is captured here, before the UPDATE overwrites it. The
@@ -247,12 +264,31 @@ RETURNING o.id, o.instance_id, o.object_class, o.op_type, o.priority, o.lane_key
  * silently otherwise, and the in-memory one is what most dispatcher tests run
  * against -- if it disagrees with Postgres, those tests prove nothing.
  */
+/**
+ * How many mutation slots an instance can fill this cycle, per class.
+ *
+ * Two numbers rather than one, because CP-2 locked an asymmetry: interactive
+ * work may draw on the whole mutation budget, while batch work is capped at
+ * the budget minus a reserved slice. One number cannot express that -- offer
+ * the full budget and a batch flood takes every slot, so an interactive
+ * operation waits a whole attempt for one to free (BUG-4).
+ *
+ * `batchFree` caps batch rows only. `totalFree` caps the cycle for that
+ * instance regardless of class, so `batchFree <= totalFree` always holds.
+ */
+export interface InstanceAvailability {
+  /** Batch rows claimable now: `batchSlots - batchInFlight`. */
+  batchFree: number;
+  /** Rows claimable now in total: `mutationConcurrency - inFlight`. */
+  totalFree: number;
+}
+
 export interface OperationStoreApi {
   enqueue(op: EnqueueInput): Promise<EnqueueResult>;
   claimBatch(
       limit: number,
       activeLaneKeys: readonly string[],
-      perInstanceAvailable: ReadonlyMap<string, number>,
+      perInstanceAvailable: ReadonlyMap<string, InstanceAvailability>,
   ): Promise<ClaimedOperation[]>;
   finalize(id: string, outcome: OperationOutcome, result?: unknown, errorCode?: string | null): Promise<boolean>;
   requeue(id: string): Promise<boolean>;
@@ -362,14 +398,16 @@ export class OperationStore implements OperationStoreApi {
   async claimBatch(
       limit: number,
       activeLaneKeys: readonly string[],
-      perInstanceAvailable: ReadonlyMap<string, number>,
+      perInstanceAvailable: ReadonlyMap<string, InstanceAvailability>,
   ): Promise<ClaimedOperation[]> {
     const instanceIds: string[] = [];
     const caps: number[] = [];
+    const batchCaps: number[] = [];
     for (const [instanceId, available] of perInstanceAvailable) {
-      if (available > 0) {
+      if (available.totalFree > 0) {
         instanceIds.push(instanceId);
-        caps.push(available);
+        caps.push(available.totalFree);
+        batchCaps.push(Math.max(0, Math.min(available.batchFree, available.totalFree)));
       }
     }
     // Every instance is saturated or rate limited: nothing can be claimed, and
@@ -379,6 +417,7 @@ export class OperationStore implements OperationStoreApi {
     const res = await this.pool.query(CLAIM_SQL, [
       instanceIds,
       caps,
+      batchCaps,
       activeLaneKeys,
       limit,
     ]);
