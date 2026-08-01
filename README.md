@@ -50,6 +50,29 @@ npm test
 npm run lint
 ```
 
+### Database
+
+```bash
+eval "$(bash scripts/test-pg.sh)"   # throwaway local server -> DATABASE_URL
+bash scripts/db-setup.sh            # seed the schema and partitions
+bash scripts/db-setup.sh --dry-run  # report without changing anything
+```
+
+`db-setup.sh` inspects the target rather than being told what state it is in.
+A database with no `operations` table gets `schema.sql`; one that predates
+Phase 11 gets migration 002 instead. That distinction is the whole point:
+every statement in `schema.sql` is `IF NOT EXISTS`, so applying it to an old
+table succeeds and the failure surfaces much later as "column terminal does
+not exist" from the claim query.
+
+It is idempotent, seeds today's and tomorrow's partitions — a range-partitioned
+table with no partition covering `now()` rejects every insert — and asserts its
+post-conditions on every run.
+
+Migration 002 adds a `STORED` generated column, which rewrites the table under
+`ACCESS EXCLUSIVE`. Drain the dispatchers first; it is not safe to run
+alongside a live claim loop.
+
 Node 22. TypeScript strict, with `exactOptionalPropertyTypes` and
 `noUncheckedIndexedAccess` copied from the framework so code moves between the
 two repositories without a typecheck surprise.

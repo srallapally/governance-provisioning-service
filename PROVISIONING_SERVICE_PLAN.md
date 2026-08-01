@@ -66,12 +66,12 @@ first commit than to retrofit it over a dispatcher.
 | Route registration | Explicit router module per plane (mutations, status, reads) | P4 |
 | Validation | Hand-rolled, mirroring `resolveRuntimeConfig`'s style | P4 |
 | pg pool construction | `pg` `Pool`; dispatcher pool separate from any API pool, max 5, `statement_timeout` set | P2 |
-| Config system | Environment variables for service-level settings; one JSON file per connector instance | P7 |
+| Config system | Env vars for service-level settings; per-application config pulled from an `ApplicationConfigStore` | P1/P7 |
 | Logging | Structured JSON to stdout, no library until there is a reason for one | P6 |
-| Metrics stack | **Undetermined** — see below | P6 |
+| Metrics stack | None exists — stdout sink + in-memory snapshot, no client library | P6 |
 | SIGTERM handling | `wiring.stop()`: stop claiming, drain in-flight to a budget, release leases, close pools | P2 |
-| Instance config location | **Undetermined** — see below | P1/P7 |
-| Schema delivery | **Undetermined** — see below | P3 |
+| Instance config location | JSON in the IGA repo, pulled by application id; file store by default | P1/P7 |
+| Schema delivery | `scripts/db-setup.sh`, run out of band; inspects the target to choose schema vs migration | P3 |
 
 Express 5 is chosen rather than invented: the framework already carries
 tested Express 5 middleware in `packages/websocket/src/security/` — `auth.ts`
@@ -115,16 +115,34 @@ renumbered away.
    is one more implementation plus a scrape config, with no call site moved.
    **No metrics client library becomes a dependency until a stack exists to
    talk to.**
-2. **Dev Cloud SQL instance** — blocks P3. The plan names "dev Cloud SQL" and
-   P3's acceptance needs a `DATABASE_URL` at a scratch database on it.
-   Connection details, auth method (IAM vs password, proxy vs direct), and
-   whether the Postgres major version matches the 16 the framework verified
-   against are all unknown.
-3. **How schema changes reach databases today** — blocks P3. `schema.sql` and
-   `migrations/002_status_and_optype.sql` exist, but there is no discovered
-   migration runner, no convention for ordering, and no answer on whether the
-   service applies migrations at boot or an operator applies them out of band.
-   P3 says "record path taken and commands here", which presumes a path.
+2. **Dev Cloud SQL instance** — **still open, but rescoped and no longer
+   blocking.** Connection details, auth method (IAM vs password, proxy vs
+   direct), and the Postgres major version remain unknown.
+
+   P3 originally proved the schema works, which needs any Postgres, not a
+   managed one. That verification moved to P0 and is done — see P3 for what
+   `scripts/db-setup.sh` was exercised against. What a real instance is still
+   needed for is role permissions for runtime DDL, the pooling mode in the
+   connection path, server version, connection limits, and latency. P1, P1.5,
+   and P2 all run against the local server `scripts/test-pg.sh` provides. P8
+   needs a real database regardless, and is the honest deadline.
+3. **How schema changes reach databases today** — **answered in part at P0
+   by supplying one.** `scripts/db-setup.sh` is the path: it inspects the
+   target, applies `schema.sql` to a fresh database or migration 002 to a
+   pre-Phase-11 one, seeds partitions, and asserts post-conditions. It is
+   idempotent and has a `--dry-run`.
+
+   It is deliberately **not** a general migration runner — there is no version
+   table and no ordered migration chain, because there are exactly two states
+   to reach and inspecting the target distinguishes them more reliably than a
+   recorded version would. If the deployment already has migration tooling,
+   this script is still the right thing to run under it.
+
+   Still open: whether an operator runs it out of band or the service runs it
+   at boot. **Recommendation: out of band.** Migration 002 adds a STORED
+   generated column, which rewrites the table under ACCESS EXCLUSIVE and is
+   explicitly unsafe alongside a live claim loop — running it from process
+   start would put a table rewrite in the path of every deploy.
 4. ~~**Where per-application instance configs live**~~ — **ANSWERED
    2026-08-01: each application instance config is a JSON document stored in
    the IGA repository and handed to the engine as an object, `ApplicationConfig`.**
@@ -381,19 +399,60 @@ eager boot).
 **Accept:** boots with wiring active, no routes; SIGTERM with an in-flight
 fake op drains then exits.
 
-## Phase P3: dev Cloud SQL schema
+## Phase P3: verify the schema against the target environment
 
-- Fresh database: apply `schema.sql`, then create today's and tomorrow's
-  partitions.
-- Pre-Phase-11 database: apply migration 002 by hand; `schema.sql` is
-  IF NOT EXISTS and fails later on an old table ("column terminal does not
-  exist").
-- Record path taken and commands here. Verify: `terminal` generated column,
-  `not_before`, `drop_operations_partition`, op_type includes
-  ADD_VALUES/REMOVE_VALUES.
+Rescoped at P0. The original phase proved the schema *works*; that is
+Postgres behaviour, not managed-service behaviour, and it is now done — see
+below. What is left is the part that is specific to a particular deployment
+and cannot be established locally.
 
-**Accept:** this repo's pg contract suite passes with DATABASE_URL at a
-scratch database on the dev instance.
+**Already done, at P0, against PostgreSQL 16.13 installed from apt:**
+`scripts/db-setup.sh` seeds a database and was exercised on all four paths.
+Fresh install applies `schema.sql` and creates today's and tomorrow's
+partitions. A second run reports the schema current and changes nothing.
+`--dry-run` reports without acting. Against a database downgraded to the
+pre-Phase-11 shape — no `terminal`, no `not_before`, narrow check
+constraints, the old `operations_pending_idx` — the script detects the
+absence of `terminal` and applies migration 002 rather than `schema.sql`,
+which is the trap the original phase named: every statement in `schema.sql`
+is IF NOT EXISTS, so applying it to an old table succeeds and the failure
+surfaces later from the claim query. Three seeded rows survived the table
+rewrite, `terminal` computed correctly across PENDING/RUNNING/SUCCEEDED, and
+the drop gate refused the partition, naming its two non-terminal rows.
+
+Post-conditions the script asserts on every run: `operations` and
+`operations_history` exist, `terminal` is `GENERATED ALWAYS`, `not_before`
+exists, both partition functions exist, `op_type` admits ADD_VALUES and
+REMOVE_VALUES, `status` admits AWAITING_READBACK, `operations_claimable_idx`
+exists, and a partition covers today.
+
+**What still needs a real instance**, none of which a local server can answer:
+
+- **Role permissions.** P5 creates partitions from inside the running process
+  and calls `drop_operations_partition`. Whether the service's role may
+  execute DDL at runtime is a grant question that passes locally as superuser
+  and fails in production. Verify with the *service's* role, not an admin one.
+- **Connection path.** If a transaction-pooling proxy sits in front,
+  `pg_advisory_xact_lock` and `FOR UPDATE SKIP LOCKED` still behave — both are
+  transaction-scoped — but session state and server-side prepared statements
+  do not survive it. Establish which pooling mode, if any, is in the path.
+- **Server version.** The DDL is verified on 16. `gen_random_uuid()` needs 13+
+  without pgcrypto; generated columns need 12+. Confirm the target's major.
+- **Connection limits.** The dispatcher pool is deliberately small (max 5), so
+  this is unlikely to bind, but the instance's limit and any per-user cap
+  should be recorded next to that number.
+- **Latency.** The claim query is a round trip per batch. Local figures
+  overstate throughput; record the delta so P8's numbers are read correctly.
+
+**Accept:** `scripts/db-setup.sh` runs clean against a scratch database on the
+target instance **using the service's own role**, and this repo's pg contract
+suite passes with that `DATABASE_URL`. Record the server version, the pooling
+mode, and the observed round-trip latency here.
+
+**Blocked:** no instance is available. This does not block P1, P1.5, or P2,
+all of which run against the local server `scripts/test-pg.sh` provides. P8 is
+an integrated soak and needs a real database regardless, so that — not P3 —
+is the honest deadline for having one.
 
 ## Phase P4: routes
 
