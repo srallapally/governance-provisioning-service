@@ -1,0 +1,17 @@
+# Ignore node_modules directory
+node_modules/
+
+# Ignore build output.
+dist/
+build/
+*.tsbuildinfo
+
+# Ignore log files
+*.log
+
+# Ignore temporary files
+*.tmp
+
+# .env files should not be committed for security
+.env
+.env.*

@@ -1,0 +1,19 @@
+# .github/workflows/ci.yml
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  # The database-free gate. Phase P1 adds a second job for the pg tier once
+  # the operation store arrives; until then there is nothing here that needs a
+  # server.
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - run: npm test
