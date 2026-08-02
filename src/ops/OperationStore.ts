@@ -308,6 +308,8 @@ export interface OperationStoreApi {
   reapStale(thresholdMs: number, readBackDelayMs: number): Promise<ReapResult>;
   pendingCounts(instanceId: string): Promise<PendingCounts>;
   getStatus(id: string): Promise<OperationStatusRow | null>;
+  /** Rejects if the store cannot currently be reached. For a readiness probe. */
+  ping(): Promise<void>;
 }
 
 /**
@@ -326,6 +328,16 @@ export class OperationStore implements OperationStoreApi {
   /** Apply the DDL. Idempotent; safe to run on every boot. */
   static schemaPath(): string {
     return OPERATIONS_SCHEMA_PATH;
+  }
+
+  /**
+   * Cheapest possible round trip to the pool, for a readiness probe. Throws
+   * on failure rather than returning a boolean -- the caller already has to
+   * handle "the query rejected," so a second, parallel "was it ok" signal
+   * would just be one more thing to keep in sync with the first.
+   */
+  async ping(): Promise<void> {
+    await this.pool.query("SELECT 1");
   }
 
   /**

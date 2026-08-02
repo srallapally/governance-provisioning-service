@@ -17,6 +17,7 @@ import type { ConnectorManager } from "@governance-connector-framework/core";
 import type { OperationStoreApi } from "../ops/index.js";
 import { createObjectsRouter } from "./objectsRoutes.js";
 import { createOperationsRouter } from "./operationsRoutes.js";
+import { createHealthRouter } from "./healthRoutes.js";
 import { mapError } from "./errors.js";
 
 export interface CreateAppDeps {
@@ -29,6 +30,8 @@ export interface CreateAppDeps {
 export function createApp(deps: CreateAppDeps): Express {
   const app = express();
   app.use(express.json());
+  // Ahead of auth: a liveness/readiness probe carries no bearer token.
+  app.use(createHealthRouter(deps));
   app.use(deps.authMiddleware);
   app.use(createObjectsRouter(deps));
   app.use(createOperationsRouter(deps));

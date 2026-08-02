@@ -326,6 +326,11 @@ export class MemoryOperationStore implements OperationStoreApi {
       fromHistory: true,
     };
   }
+
+  /** In-memory, so there is never anything to fail. */
+  async ping(): Promise<void> {
+    return;
+  }
 }
 
 /** Interactive ahead of batch, then oldest first -- the SQL's ORDER BY. */
