@@ -49,6 +49,7 @@ Severity describes consequence, not effort.
 |---|---|---|---|---|
 | [BUG-4](#bug-4) | medium | FIXED | `ops/Dispatcher`, `ops/OperationStore` | The reserved interactive slice is computed but never enforced |
 | [BUG-7](#bug-7) | medium | FIXED | `tsconfig.json` | Test sources were never typechecked, so a signature change failed silently at runtime |
+| [BUG-8](#bug-8) | high | FIXED | `ops/Dispatcher` | A claim cycle racing `stop()`'s pool closure crashed the process |
 
 ---
 
@@ -180,3 +181,51 @@ and is run by `npm run typecheck`. Both defects above surfaced on the first run.
 
 CI runs `typecheck` alongside `build`, `lint`, and `test`, so neither defect
 class can return quietly.
+
+---
+
+<a id="bug-8"></a>
+## BUG-8 — A claim cycle racing `stop()`'s pool closure crashed the process
+
+| | |
+|---|---|
+| **Severity** | high |
+| **Status** | FIXED in Phase P8, commit `d68ccd8` (PR #12) |
+| **Component** | `ops/Dispatcher.ts` (`runCycle`) |
+| **Reported** | 2026-08-02 |
+| **Affects** | P2 onward (`Dispatcher.start`/`stop` existed since P2; only real
+network latency between the claim query and `stop()` opens the window) |
+| **Found by** | a real Cloud SQL soak run (P8), not reproducible against local
+Postgres |
+
+### Symptom
+
+`Dispatcher.stop()` awaits `inFlight` (attempts already claimed and
+executing) before returning, but has no way to know about, or wait for, a
+`runCycle()` currently stuck awaiting `claimBatch()` itself — nothing is
+added to `inFlight` until the claim resolves. Under local Postgres's
+near-zero round-trip latency this window never manifested in any test or
+soak run in this repository's history. Against real Cloud SQL, a round trip
+of 60-200ms+ was wide enough for a straggling claim cycle to still be
+querying the moment `stop()` returned and the caller closed the pool
+underneath it.
+
+`runCycle()`'s body had no `try`/`catch` around it — unlike its siblings
+`finalize()` and `safeRequeue()` in the same file, which already tolerate a
+closed pool the same way `stop()`'s own docstring describes for in-flight
+attempts. Invoked via a bare `void this.runCycle()` in `start()`'s
+`setInterval` callback, the resulting `Error: Cannot use a pool after
+calling end on the pool` became an unhandled rejection that crashed the
+whole process — not a stranded row `reapStale()` could recover, an outright
+process exit, observed during a real soak script's shutdown sequence after
+the run itself had already completed and reported clean numbers.
+
+### Fix
+
+Added a `catch` clause to `runCycle()` that logs and returns `0`, degrading
+a straggling claim cycle to the same "stranded `RUNNING` row, recovered by
+`reapStale()`" case the rest of the file already accepts, instead of an
+unhandled rejection. Regression test in `test/Dispatcher.test.ts`
+(`lifecycle` describe block) reproduces the race deterministically with a
+mocked `store.claimBatch()` rejection, so it does not depend on real network
+latency to catch a regression.
