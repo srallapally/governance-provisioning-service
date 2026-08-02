@@ -231,6 +231,16 @@ export class Dispatcher {
    * what `reapStale` exists to recover, not a new failure mode this
    * introduces.
    *
+   * The claim cycle itself is the same story, not a separate one: `stop()`
+   * only tracks `inFlight` (claimed, executing attempts), not a cycle
+   * currently stuck inside `claimBatch()` -- there is nothing to track it
+   * with, since nothing is added to `inFlight` until the claim resolves. A
+   * cycle can therefore still be querying after this method returns and the
+   * caller closes the pool. `runCycle()` catches that (P8: a real Cloud SQL
+   * run's latency was the first thing to actually hit this window; local
+   * Postgres never has), so it degrades to the same stranded-`RUNNING`-row
+   * case rather than crashing the process on an unhandled rejection.
+   *
    * Omitting the budget preserves the original unbounded behaviour, which
    * every existing caller (all current tests) relies on.
    */
@@ -310,6 +320,19 @@ export class Dispatcher {
       }
 
       return claimed.length;
+    } catch (e) {
+      // A cycle in progress when stop() closes the pool underneath it is a
+      // real, observed race, not a hypothetical one -- found via a real
+      // Cloud SQL run (P8), where round-trip latency is high enough to keep
+      // a cycle genuinely in flight past the moment stop() returns.
+      // finalize()/safeRequeue() already tolerate a closed pool this same
+      // way; claimBatch() (and anything else this cycle calls) did not, and
+      // an exception here previously propagated out of a bare `void
+      // this.runCycle()` in start()'s setInterval callback -- an unhandled
+      // rejection that crashes the process outright, not a stranded row
+      // reapStale() can recover. Log and move on instead.
+      this.logger.error(`[dispatcher] claim cycle failed: ${(e as Error).message}`);
+      return 0;
     } finally {
       this.cycleInFlight = false;
     }
