@@ -687,31 +687,66 @@ exists, and a partition covers today.
 
 **What still needs a real instance**, none of which a local server can answer:
 
-- **Role permissions.** P5 creates partitions from inside the running process
-  and calls `drop_operations_partition`. Whether the service's role may
-  execute DDL at runtime is a grant question that passes locally as superuser
-  and fails in production. Verify with the *service's* role, not an admin one.
-- **Connection path.** If a transaction-pooling proxy sits in front,
-  `pg_advisory_xact_lock` and `FOR UPDATE SKIP LOCKED` still behave — both are
-  transaction-scoped — but session state and server-side prepared statements
-  do not survive it. Establish which pooling mode, if any, is in the path.
-- **Server version.** The DDL is verified on 16. `gen_random_uuid()` needs 13+
-  without pgcrypto; generated columns need 12+. Confirm the target's major.
-- **Connection limits.** The dispatcher pool is deliberately small (max 5), so
-  this is unlikely to bind, but the instance's limit and any per-user cap
-  should be recorded next to that number.
-- **Latency.** The claim query is a round trip per batch. Local figures
-  overstate throughput; record the delta so P8's numbers are read correctly.
+- ~~**Role permissions.** P5 creates partitions from inside the running
+  process and calls `drop_operations_partition`. Whether the service's role
+  may execute DDL at runtime is a grant question that passes locally as
+  superuser and fails in production. Verify with the *service's* role, not an
+  admin one.~~ **NOT YET ANSWERED.** The instance below was reached with the
+  Cloud SQL default `postgres` role (superuser), not a scoped service role,
+  because standing one up wasn't asked for as part of this check. This bullet
+  stays open — a least-privilege role that can only touch `operations`/
+  `operations_history` and the two partition functions still needs to be
+  created and re-run against, before this item can be marked satisfied.
+- **Connection path.** ANSWERED for this instance: public IP, direct
+  connection (`sslmode=require`, `uselibpqcompat=true` — the instance is
+  SSL-only with no client-cert requirement; `pg`'s newer default treats
+  `sslmode=require` as `verify-full` and fails without either this flag or a
+  downloaded server CA), no pooler in front. The transaction-pooling-proxy
+  question in the original bullet remains unanswered for any deployment that
+  does put one in front — this instance doesn't.
+- ~~**Server version.** The DDL is verified on 16.~~ ANSWERED: also verified
+  clean on **PostgreSQL 18.4** (Cloud SQL Enterprise, `db-custom-2-8192`,
+  `us-central1`) — `scripts/db-setup.sh` fresh-install path and the full pg
+  contract suite (57/57) both pass unmodified.
+- **Connection limits.** Still open — not checked against this instance.
+- ~~**Latency.** The claim query is a round trip per batch. Local figures
+  overstate throughput; record the delta so P8's numbers are read
+  correctly.~~ ANSWERED, and it cost a real finding: the pg contract suite's
+  default per-test timeout (vitest's 5000ms) is tuned for a same-host
+  Postgres. Against this instance over the public internet, the test with the
+  most round trips (40 sequential `enqueue()` calls + 3 concurrent
+  `claimBatch()` calls) blew the timeout outright, and two more tests failed
+  right behind it — not from a logic defect, but because vitest doesn't
+  cancel a timed-out test's in-flight queries, so they kept running against
+  the shared pool/table and raced the next test's `TRUNCATE`. A `--testTimeout=30000`
+  rerun passed all 57/57, confirming it was purely latency. Fixed by giving
+  `describeWithPg` (`test/harness/describeWithPg.ts`) a 20s default per-test
+  timeout for every suite built on it, rather than raising vitest's global
+  default — the in-memory suites don't need it and a genuine local hang
+  should still fail fast. No exact round-trip figure was captured (the
+  fix was verified by pass/fail at two timeout values, not by timing
+  instrumentation); if P8's soak needs a number, measure it there directly.
 
-**Accept:** `scripts/db-setup.sh` runs clean against a scratch database on the
-target instance **using the service's own role**, and this repo's pg contract
-suite passes with that `DATABASE_URL`. Record the server version, the pooling
-mode, and the observed round-trip latency here.
+**Accept:** partially met. `scripts/db-setup.sh` and the full pg contract
+suite both run clean against `iga-prov-db` (PostgreSQL 18.4, Cloud SQL,
+project `iga-provisioning-service`) — but with the `postgres` superuser role,
+not a scoped service role, so the role-permissions item above is still open.
+Server version and (indirectly) latency are recorded. Pooling mode is
+recorded for this instance's own topology (none) but the proxy-specific
+question is untested. Connection limits untested.
 
-**Blocked:** no instance is available. This does not block P1, P1.5, or P2,
-all of which run against the local server `scripts/test-pg.sh` provides. P8 is
-an integrated soak and needs a real database regardless, so that — not P3 —
-is the honest deadline for having one.
+**Blocked:** no longer blocked on instance availability — `iga-prov-db`
+exists and is reachable from a machine with normal internet egress (this
+sandboxed session itself cannot reach it directly; see below). Still open:
+scoped service role, connection limits, and pooling-proxy behavior if a
+deployment puts one in front.
+
+**Note on how this was run:** this Claude Code session's own sandbox cannot
+reach Cloud SQL at all — its outbound network is an HTTPS CONNECT-only proxy
+that explicitly does not tunnel raw-TCP databases or client-mTLS (both
+required by direct Postgres and by the Cloud SQL Auth Proxy alike). Every
+check above was run by the user from their own machine, following commands
+provided in conversation; this file was updated from the pasted output.
 
 ## Phase P4: routes
 
