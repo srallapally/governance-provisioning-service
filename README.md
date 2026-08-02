@@ -48,27 +48,6 @@ loop needs lives here.
   Docker image, and a documented path to GKE with HA and DR — see
   `docs/DEPLOYMENT_PLAN.md`.
 
-## Status: Phase P8 delivered — all numbered phases complete
-
-Phases P0 through P5 and P7 through P8 are done: the operation table and
-dispatcher (`src/ops/`), application config and scheduling (`src/config/`),
-the wiring module that assembles them into a running process
-(`src/provisioning/wiring.ts`), the HTTP surface (`src/http/`) —
-`openapi.yaml`'s routes, bearer-JWT auth, and the NDJSON streaming search —
-in-process partition maintenance (`src/ops/PartitionMaintainer.ts`), the
-service-level config block: dispatcher pool size/claim interval/reaper
-threshold, plus two boot-time cross-validations (issuer/JWKS same host,
-refuses to boot; inbound audience vs. `IGA_CLIENT_ID` collapse, warns), and
-the integrated soak (`npm run soak:http`) verified clean against a real
-Cloud SQL instance — real loader, real HTTP routes and auth, real Postgres.
-`src/index.ts` is the real entrypoint: it starts the data path, mounts the
-HTTP server, and drains on `SIGTERM`/`SIGINT`.
-
-See [`docs/PROVISIONING_SERVICE_PLAN.md`](./docs/PROVISIONING_SERVICE_PLAN.md)
-for the phases (P6 — metrics binding — was deferred wholesale to the standing
-**Backlog** section, since it blocks neither P7 nor P8) and, at the top of
-that file, the P0 findings.
-
 ## Architecture
 
 ```
