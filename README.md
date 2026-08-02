@@ -136,4 +136,78 @@ a real build supplies real bundles. HA and DR are
 it exists to get a developer from a clean checkout to a working stack, not
 to model production topology.
 
+#### Building and publishing the production image
+
+`docker compose build` above is for local iteration; this is the
+standalone runbook for producing the actual image a deployment ships.
+GKE-specific automation (a CI build-and-push stage) is still unbuilt — see
+`DEPLOYMENT_PLAN.md`'s "CI/CD (sketch, not built)" — so today this is a
+manual sequence, not yet a pipeline step.
+
+1. **Supply real connector bundles.** `docker/connector-bundles/` is
+   intentionally empty (this repo doesn't own any real bundle) and the
+   `Dockerfile` bakes its contents in directly, by fixed path — there's no
+   build ARG that can point elsewhere, because Docker's `COPY` can never
+   reach outside the build context regardless of what a `--build-arg`
+   value says (see that directory's own README, which explains this the
+   hard way). Replace its contents before building:
+
+   ```bash
+   rm -rf docker/connector-bundles/*
+   cp -r /path/to/external-connectors/dist/* docker/connector-bundles/
+   docker build -t governance-provisioning-service:local .
+   ```
+
+   Building with the default (empty) bundles directory produces a valid
+   image that boots and answers `/healthz`/`/readyz`, but
+   `loadExternalConnectors` will have nothing to register — fine for
+   verifying the image itself, not for a real deployment.
+
+2. **Smoke-test the image standalone**, against any reachable Postgres
+   with the schema already applied (`scripts/db-setup.sh` — see the
+   Database section above) and a real JWKS. Same env vars as the "Running"
+   section above, just via `docker run` instead of `npx tsx`:
+
+   ```bash
+   docker run --rm -p 3000:3000 \
+     -e DATABASE_URL=postgres://...            \
+     -e APP_CONFIG_DIR=/config                  \
+     -v /path/to/app-configs:/config:ro         \
+     -e JWT_JWKS_URI=https://.../jwks.json      \
+     -e JWT_EXPECTED_ISS=https://issuer:443     \
+     -e JWT_EXPECTED_AUD=provisioning-service   \
+     governance-provisioning-service:local
+   curl http://localhost:3000/healthz
+   curl http://localhost:3000/readyz
+   ```
+
+   `APP_CONFIG_DIR` needs a mounted volume here (it's not baked into the
+   image — see the config-delivery decision in `DEPLOYMENT_PLAN.md`);
+   `CONNECTOR_BUNDLE_DIR` doesn't, since the image already sets it to
+   `/app/connector-bundles` and bundles were baked in at build time above.
+
+3. **Tag and push.** `DEPLOYMENT_PLAN.md`'s sketch: tag by commit SHA
+   (immutable, traceable to the exact source), plus `latest` only on
+   builds from `main`. Example against GCP Artifact Registry (adjust
+   region/project/repo to the target environment — none of this is
+   hardcoded anywhere, this is illustrative):
+
+   ```bash
+   gcloud auth configure-docker REGION-docker.pkg.dev
+   IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/governance-provisioning-service
+   SHA=$(git rev-parse --short HEAD)
+
+   # docker/connector-bundles/ already holds real bundles, per step 1
+   docker build -t "$IMAGE:$SHA" .
+   docker push "$IMAGE:$SHA"
+
+   # only on main:
+   docker tag "$IMAGE:$SHA" "$IMAGE:latest"
+   docker push "$IMAGE:latest"
+   ```
+
+   Any OCI registry works the same way — Artifact Registry is this
+   example's target because the project already runs on GCP (Cloud SQL),
+   not because anything here depends on it specifically.
+
 [fw]: https://github.com/srallapally/governance-connector-framework

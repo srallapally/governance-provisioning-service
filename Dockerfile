@@ -24,19 +24,21 @@ COPY tsconfig.json tsconfig.test.json ./
 COPY src/ ./src/
 RUN npm run build
 
-# Placeholder for connector bundles, overridable via CONNECTOR_BUNDLES_DIR.
-# A real deployment supplies real bundles here (or points the build at a
-# checkout of the external-connectors repo) before building; this repo does
-# not own any bundle beyond the test fixtures, so the default is empty.
+# docker/connector-bundles/ is a placeholder, empty on purpose -- this repo
+# doesn't own any real bundle. A real deployment replaces its contents with
+# real bundles before running `docker build` (see that directory's own
+# README for why this can't just be a build ARG pointing elsewhere: COPY
+# can never reach outside the build context, regardless of what a --build-arg
+# value says, so an external directory has to be brought inside the context
+# first -- there's no way around that).
 FROM node:22-alpine AS runtime
-ARG CONNECTOR_BUNDLES_DIR=docker/connector-bundles
 WORKDIR /app
 RUN addgroup -S app && adduser -S app -G app
 COPY package.json package-lock.json ./
 COPY vendor/ ./vendor/
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
-COPY ${CONNECTOR_BUNDLES_DIR} ./connector-bundles/
+COPY docker/connector-bundles/ ./connector-bundles/
 
 ENV NODE_ENV=production \
     PORT=3000 \
