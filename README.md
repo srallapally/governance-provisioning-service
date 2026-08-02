@@ -106,4 +106,34 @@ those files' `loadWiringConfig()`/`validateJwtConfig()` for the full env var
 list. `SIGTERM`/`SIGINT` close the HTTP server first, then drain the
 dispatcher, so nothing new can enqueue while in-flight work finishes.
 
+`GET /healthz` and `GET /readyz` are unauthenticated (mounted ahead of
+`requireJwt()`), for a container orchestrator's liveness/readiness probes —
+see `src/http/healthRoutes.ts`.
+
+### Docker
+
+```bash
+docker compose up --build
+docker compose logs jwks   # copy the printed bearer token
+curl -X POST http://localhost:3000/instances/demo-instance/objects/__ACCOUNT__ \
+  -H "Authorization: Bearer <token>" -H 'content-type: application/json' \
+  -d '{"attributes":{"__NAME__":"alice"},"priority":"interactive"}'
+curl http://localhost:3000/operations/<operationId> -H "Authorization: Bearer <token>"
+```
+
+Brings up Postgres, applies the schema (`migrate`, one-shot, via the same
+`scripts/db-setup.sh` real operators use), a throwaway local JWT issuer
+(`jwks` — dev-only, never production, see `scripts/dev-auth.ts`), and the
+service itself, wired to the fixture connector the test suite and soak
+scripts already use (`test/fixtures/connectors`) so there's something real
+to exercise from a clean checkout in one command.
+
+`Dockerfile`'s `runtime` target (the default) is what a real deployment
+ships: non-root, dev-dependency-free, connector bundles baked in at build
+time rather than mounted — see `docker/connector-bundles/README.md` for how
+a real build supplies real bundles. HA and DR are
+[`DEPLOYMENT_PLAN.md`](./DEPLOYMENT_PLAN.md)'s job, not this compose file's;
+it exists to get a developer from a clean checkout to a working stack, not
+to model production topology.
+
 [fw]: https://github.com/srallapally/governance-connector-framework

@@ -1,0 +1,12 @@
+{
+  "applicationId": "demo-instance",
+  "connectorType": "fake",
+  "connectorVersion": "1.0.0",
+  "connectorConfig": {},
+  "runtime": {
+    "mutationConcurrency": 5,
+    "readConcurrency": 5,
+    "attemptDeadlineMs": 5000,
+    "interactiveSliceFraction": 0.2
+  }
+}

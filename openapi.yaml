@@ -201,6 +201,56 @@ paths:
             No operation with that id. Also returned for a syntactically
             invalid id rather than a 500.
 
+  /healthz:
+    get:
+      summary: Liveness probe
+      description: >-
+        Unauthenticated, for a container orchestrator, not for API callers.
+        Never touches the store: a slow or unreachable database should stop
+        a pod receiving traffic, not restart it. Always 200 while the
+        process can answer HTTP at all.
+      operationId: getHealthz
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+
+  /readyz:
+    get:
+      summary: Readiness probe
+      description: >-
+        Unauthenticated, for a container orchestrator, not for API callers.
+        Makes the cheapest possible round trip to the store.
+      operationId: getReadyz
+      security: []
+      responses:
+        "200":
+          description: The store answered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+        "503":
+          description: The store could not be reached.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, message]
+                properties:
+                  status: { type: string, enum: [unavailable] }
+                  message: { type: string }
+
 components:
   securitySchemes:
     bearerAuth:
