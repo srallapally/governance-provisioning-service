@@ -880,6 +880,53 @@ terminal-only past-retention partition drops; two concurrent passes do the
 work once; the days-ahead gauge reflects reality after a pass and after a
 deliberately skipped one.
 
+**Delivered.** `src/ops/PartitionMaintainer.ts`, wired into
+`src/provisioning/wiring.ts` alongside the dispatcher. 8 new tests
+(`test/ops/PartitionMaintainer.test.ts`, real-Postgres only -- partitions are
+a DDL construct with no in-memory double, unlike `OperationStore`) plus one
+in `test/provisioning/wiring.test.ts` proving `start()` actually wires it up
+(drops tomorrow's partition, starts the process, confirms the immediate pass
+recreates it). 4 repeated real-Postgres full-suite runs, no flakiness.
+
+Notes and one interpretation worth recording:
+
+- "Hourly timer **in the dispatcher process**" is read as "in the same OS
+  process the dispatcher runs in" (this service is one process regardless),
+  not "inside the `Dispatcher` class" -- `PartitionMaintainer` is a sibling
+  component with its own `start()`/`stop()`, constructed and torn down in
+  `wiring.ts` next to `dispatcher`, not a method on it. Partition DDL
+  housekeeping and claiming/executing operations are different concerns and
+  nothing forced them into one class.
+- **Blocking, not skipping.** Coordination is `pg_advisory_xact_lock` (waits
+  its turn), deliberately not the reaper's `pg_try_advisory_xact_lock`
+  (skips if busy) -- a losing replica here should still see accurate
+  post-pass state, not silently do nothing for a whole interval.
+- **No new SQL function.** "Days ahead" needed some way to answer "how many
+  consecutive partitions exist starting today," which nothing in
+  `sql/schema.sql` computes. Rather than add a third partition function (a
+  migration, plus a new `db-setup.sh` verification line), the maintainer
+  does it with one query against `pg_tables`/`to_regclass` per pass, in
+  Node. `sql/schema.sql` and `scripts/db-setup.sh` are both untouched by
+  this phase.
+- **"Days ahead after a deliberately skipped [pass]"** is read as: a pass
+  that finds nothing to ensure or drop (a no-op maintenance-wise) must still
+  report the gauge accurately, not omit it because nothing changed. Tested
+  directly (`the days-ahead gauge reflects reality, including on a pass
+  that changes nothing`). The lock-contention reading ("a replica that lost
+  the race") is covered by the separate concurrent-passes test instead.
+- **A real bug the tests caught, not just described:** node-postgres parses
+  a `date`-typed column into a JS `Date` by default, not a string. The
+  retention query's `day` value was silently corrupted this way, and the
+  effect was invisible at first -- `runPass()` deliberately catches and logs
+  every error rather than throwing (this is a bare `setInterval`, no caller
+  ever awaits an individual pass), so the resulting crash inside the
+  refusal-logging branch was swallowed by the test's own quiet-by-design
+  logger and surfaced only as a metric that never fired. Fixed by casting to
+  text in SQL (`to_char(..., 'YYYY-MM-DD')`) and treating the value as an
+  opaque string end to end, never converting back to a JS Date. Worth
+  flagging as a general hazard for any future code that selects a `date`
+  column through this pool.
+
 ## Phase P6: metrics binding
 
 Revised at P0: there is no metrics stack to bind to. The instrumentation is

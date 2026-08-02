@@ -38,6 +38,7 @@ type Pool = InstanceType<typeof Pool>;
 
 import { Dispatcher } from "../ops/Dispatcher.js";
 import { OperationStore } from "../ops/OperationStore.js";
+import { PartitionMaintainer } from "../ops/PartitionMaintainer.js";
 import type { ApplicationConfigStore } from "../config/application.js";
 import { FileApplicationConfigStore } from "../config/FileApplicationConfigStore.js";
 import { ApplicationRegistrar } from "../config/registerApplication.js";
@@ -68,7 +69,21 @@ export interface WiringConfig {
     shutdownGraceMs: number;
     /** `statement_timeout` for the dispatcher's own pool, in ms. Default 5000ms. */
     statementTimeoutMs: number;
-    logger: { error(msg: string): void };
+    /**
+     * Partitions older than this many days, and fully terminal, are dropped
+     * by the partition maintenance pass (P5). Default 1 -- matches
+     * `sql/schema.sql`'s own documented "24 hour resolution window" (a
+     * partition is a whole day, so keeping today's and yesterday's is the
+     * closest a day-granularity retention window gets to 24h).
+     */
+    partitionRetentionDays: number;
+    /** How often the partition maintenance pass runs, in ms. Default 3_600_000 (hourly). */
+    partitionMaintenanceIntervalMs: number;
+    /**
+     * `warn` is used only by partition maintenance (P5), for a refused drop
+     * -- correct behavior that still needs to be loud, not an error.
+     */
+    logger: { warn(msg: string): void; error(msg: string): void };
 }
 
 const CONFIG_DEFAULTS = {
@@ -77,6 +92,8 @@ const CONFIG_DEFAULTS = {
     shutdownGraceMs: 2_000,
     statementTimeoutMs: 5_000,
     poolMax: 5,
+    partitionRetentionDays: 1,
+    partitionMaintenanceIntervalMs: 3_600_000,
 };
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
@@ -130,7 +147,11 @@ export function loadWiringConfig(env: NodeJS.ProcessEnv = process.env): WiringCo
             env, "DISPATCHER_SHUTDOWN_GRACE_MS", CONFIG_DEFAULTS.shutdownGraceMs),
         statementTimeoutMs: optionalPositiveInt(
             env, "DISPATCHER_POOL_STATEMENT_TIMEOUT_MS", CONFIG_DEFAULTS.statementTimeoutMs),
-        logger: { error: (m) => console.error(m) },
+        partitionRetentionDays: optionalPositiveInt(
+            env, "PARTITION_RETENTION_DAYS", CONFIG_DEFAULTS.partitionRetentionDays),
+        partitionMaintenanceIntervalMs: optionalPositiveInt(
+            env, "PARTITION_MAINTENANCE_INTERVAL_MS", CONFIG_DEFAULTS.partitionMaintenanceIntervalMs),
+        logger: { warn: (m) => console.warn(m), error: (m) => console.error(m) },
     };
 
     if (appConfigStore === "file") {
@@ -154,6 +175,7 @@ interface RunningWiring {
     store: OperationStore;
     manager: ConnectorManager;
     dispatcher: Dispatcher;
+    maintainer: PartitionMaintainer;
     registrar: ApplicationRegistrar;
     drainBudgetMs: number;
     shutdownGraceMs: number;
@@ -269,6 +291,7 @@ export async function start(config: WiringConfig = loadWiringConfig()): Promise<
     let pool: Pool | undefined;
     let registry: ConnectorRegistry | undefined;
     let manager: ConnectorManager | undefined;
+    let maintainer: PartitionMaintainer | undefined;
 
     try {
         pool = new Pool({
@@ -311,17 +334,27 @@ export async function start(config: WiringConfig = loadWiringConfig()): Promise<
         });
         dispatcher.start();
 
+        maintainer = new PartitionMaintainer(pool, {
+            retentionDays: config.partitionRetentionDays,
+            intervalMs: config.partitionMaintenanceIntervalMs,
+            metrics,
+            logger: config.logger,
+        });
+        maintainer.start();
+
         running = {
             pool,
             store,
             manager,
             dispatcher,
+            maintainer,
             registrar,
             drainBudgetMs: config.drainBudgetMs,
             shutdownGraceMs: config.shutdownGraceMs,
             logger: config.logger,
         };
     } catch (err) {
+        if (maintainer) await maintainer.stop().catch(() => { /* teardown is best effort */ });
         if (manager) await manager.shutdown().catch(() => { /* teardown is best effort */ });
         if (registry) await registry.disposeAll().catch(() => { /* nothing eager was registered */ });
         if (pool) await pool.end().catch(() => { /* pool may already be broken */ });
@@ -356,6 +389,9 @@ export async function stop(): Promise<void> {
     running = undefined;
 
     await w.dispatcher.stop({ drainBudgetMs: w.drainBudgetMs });
+    await w.maintainer.stop().catch((e: unknown) => {
+        w.logger.error(`[wiring] maintainer.stop() failed: ${(e as Error).message}`);
+    });
 
     const graceDeadline = Date.now() + w.shutdownGraceMs;
     while (w.dispatcher.inFlightCount > 0 && Date.now() < graceDeadline) {
