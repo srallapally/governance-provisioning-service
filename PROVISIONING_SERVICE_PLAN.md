@@ -1084,11 +1084,11 @@ in-flight batch attempt completes, not the ordering-satisfiable
 `interactive p50 < batch p50`. Watch event-loop lag: begins the dataset the
 sidecar decision (open since CP-1) waits on.
 
-**Accept:** numbers recorded here; zero INDETERMINATE without injected faults;
-CP-7 in the framework log covering integration results (CP-5 was the
-extraction).
+**Accept: MET.** Numbers recorded below; zero INDETERMINATE without injected
+faults; CP-7 written to the framework log covering integration results
+(CP-5 was the extraction).
 
-**Delivered (code), Accept still open (real numbers).** New
+**Delivered.** New
 `test/load/soakHttp.ts` (`npm run soak:http`) closes all four gaps found by
 reading the existing `test/load/soak.ts` line by line before writing
 anything: it drives load through the real loader (`loadExternalConnectors`)
@@ -1244,6 +1244,43 @@ same tradeoff this script now makes explicit for itself. Reverified locally
 at both `OPS=100` and the default `OPS=1000` -- both clean, unaffected
 (local Postgres was never the environment where the undersized pool caused
 problems), full test suite (314 tests) still passing.
+
+**The real Cloud SQL run, clean.** `iga-prov-db` (PostgreSQL 18.4, project
+`iga-provisioning-service`), `OPS=100` (defaults otherwise: 4 instances,
+budget 10/instance, `LATENCY_MS=400`, `ENQUEUE_CONCURRENCY=20`), no
+`SOAK_TIMEOUT_MS` override (180s default), operations table cleared of
+leftover rows from the earlier stalled runs first:
+
+```
+enqueue: 100 ops (concurrency 20) in 2531ms (40/s)
+drain tail: 100/100 ops terminal, 3310ms after the last enqueue
+batch       latency p50 2867.1ms  p99 3501.8ms  n=95
+interactive latency p50 1513.9ms  p99 1786.4ms  n=5
+outcomes: SUCCEEDED=12, FAILED_CONFIRMED=88 (deliberate name collisions)
+lane serialization violations: 0
+batch concurrency reached: 3 (budget 10)
+interactive attempts that started while a batch attempt was in flight: 2
+event-loop lag (3 windows, 2000ms each): mean min 10.4 / p50 10.5 / max 10.5ms,
+                                          p99  min 11.5 / p50 11.6 / max 12.6ms
+OK
+```
+
+No crash, no stall, no FAIL -- clean start to finish. The three real bugs
+this phase's Cloud SQL runs caught (name-allocation lane collapse,
+Dispatcher's shutdown race, and this pool-sizing gap, all recorded above)
+are all fixed and merged; this run is the first with all three fixes in
+place. Batch latency (p50 ~2.9s) is dominated by queueing behind the
+concurrency budget at only 3 lanes/instance (perInstanceNameSpace=3 at this
+`OPS`), not by per-attempt cost -- individual `attempt_latency_ms` samples
+in the metrics stream cluster around 200-700ms, consistent with 400ms
+connector latency plus real Cloud SQL round trips. The P1.5 property is
+empirically confirmed against real infrastructure: 2 interactive attempts
+genuinely started while a batch attempt on the same instance was still in
+flight, once batch concurrency reached its cap -- the reserved slice works
+under real network latency, not just in-memory. Event-loop lag stayed flat
+under load (mean ~10.5ms, p99 ~12ms) -- the dataset CP-1's sidecar-vs-in-process
+decision was waiting on; see CP-7 in the framework's checkpoint log for the
+decision this unblocks.
 
 ## After P8
 
