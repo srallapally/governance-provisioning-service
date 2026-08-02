@@ -4,16 +4,20 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 ## Git rules
 
-- All work happens on `feature/provisioning-service` or branches cut from it.
-- Never check out, merge into, or push to `main`.
-- Pull requests use base `feature/provisioning-service`, never base `main`.
-- One plan phase per commit. Conventional commit messages.
-- Design authority: `PROVISIONING_SERVICE_PLAN.md` in this repository and the
-  checkpoint log in the framework repository
+- Every unit of work gets a fresh branch cut from `origin/main` (never a
+  long-lived feature branch layered on top of the last one — a squash-merged
+  PR gives its branch a different commit identity than `main`'s copy of the
+  same content, and building the next branch on the stale one produces a
+  spurious merge conflict).
+- Pull requests use base `main`.
+- One phase (or fix) per commit. Conventional commit messages.
+- Design authority: `docs/PROVISIONING_SERVICE_PLAN.md` in this repository
+  and the checkpoint log in the framework repository
   (`governance-connector-framework_checkpoint_log.md`). Checkpoints are not
   duplicated here — the plan places CP-7 in the framework's log.
 - Never patch framework code from this repository. File framework defects in
   the framework's `BUG_LOG.md`.
+- Never merge a PR without the user explicitly saying so.
 
 ## What this repository is
 
@@ -45,7 +49,7 @@ Core is consumed as a vendored tarball built from a pinned framework commit,
 not a git dependency; see the P1 note in the plan for why, and
 `scripts/vendor-core.sh` to regenerate it.
 
-Phases P1 through P8 are described in `PROVISIONING_SERVICE_PLAN.md`. Read the
+Phases P1 through P8 are described in `docs/PROVISIONING_SERVICE_PLAN.md`. Read the
 P0 findings section at the top of that file before starting any of them — six
 discovery items had no answer at P0 and each blocks a specific phase. Three
 have since been settled: there is no metrics stack (P6 revised to suit);

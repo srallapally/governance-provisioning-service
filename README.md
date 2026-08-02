@@ -11,6 +11,43 @@ connection pooling. The boundary was locked at CP-5 under a single rule: what
 the facade needs to execute one operation stays there; what only the claim
 loop needs lives here.
 
+## Capabilities
+
+- **Async mutations over HTTP.** `POST` a create/update/delete/add-values/
+  remove-values, get `202` with an `operationId` back immediately; poll
+  `GET /operations/:id` for the outcome. The mutation is durably queued
+  (Postgres) before the caller gets a response — a crash right after `202`
+  loses nothing.
+- **A durable, horizontally-scalable claim loop**, not an in-memory queue.
+  Claiming uses `SELECT ... FOR UPDATE SKIP LOCKED`; the reaper and partition
+  maintainer use advisory locks. Multiple replicas of this service can run
+  against the same Postgres with no leader election and no risk of double
+  claiming — see `docs/DEPLOYMENT_PLAN.md` for why that's true by
+  construction, not by convention.
+- **Priority scheduling that actually reserves capacity.** Batch work is
+  capped below an instance's full mutation budget; interactive work can use
+  the whole thing. A batch backlog can never starve an interactive request
+  of the reserved slice.
+- **Lane serialization.** Two operations that touch the same object
+  (`create:<objectClass>:<nameAttrValue>`, or `uid:<objectClass>:<uid>` for
+  update/delete/deltas) can never run concurrently, across every replica —
+  the lock lives in Postgres, not in any one process's memory.
+- **A terminal outcome taxonomy that tells the caller what to do next**, not
+  just pass/fail — see the outcome table in Design, below.
+- **Connector-agnostic.** Executes through any OpenICF-compatible connector
+  bundle the framework loads at runtime (`CONNECTOR_BUNDLE_DIR`) — this
+  service never talks to a target system directly.
+- **Lazy application registration.** An application/instance becomes known
+  the first time an operation names it; nothing needs registering at boot.
+- **Bearer-JWT authenticated**, with two boot-time cross-validation checks
+  (issuer/JWKS same host — refuses to boot on mismatch; inbound audience vs.
+  outbound client id collapse — warns) that catch copy-paste config mistakes
+  before they become a security question at request time.
+- **Container-orchestrator-ready.** `/healthz`/`/readyz` liveness and
+  readiness probes, graceful `SIGTERM`/`SIGINT` draining, a production-shaped
+  Docker image, and a documented path to GKE with HA and DR — see
+  `docs/DEPLOYMENT_PLAN.md`.
+
 ## Status: Phase P8 delivered — all numbered phases complete
 
 Phases P0 through P5 and P7 through P8 are done: the operation table and
@@ -27,10 +64,66 @@ Cloud SQL instance — real loader, real HTTP routes and auth, real Postgres.
 `src/index.ts` is the real entrypoint: it starts the data path, mounts the
 HTTP server, and drains on `SIGTERM`/`SIGINT`.
 
-See [`PROVISIONING_SERVICE_PLAN.md`](./PROVISIONING_SERVICE_PLAN.md) for the
-phases (P6 — metrics binding — was deferred wholesale to the standing
+See [`docs/PROVISIONING_SERVICE_PLAN.md`](./docs/PROVISIONING_SERVICE_PLAN.md)
+for the phases (P6 — metrics binding — was deferred wholesale to the standing
 **Backlog** section, since it blocks neither P7 nor P8) and, at the top of
 that file, the P0 findings.
+
+## Architecture
+
+```
+HTTP request
+  │
+  ▼
+requireJwt()              src/http/auth.ts          bearer-JWT, boot-validated
+  │
+  ▼
+admission                 src/ops/admission.ts       schema/object-class/naming
+  │                                                   validation, lane-key assignment
+  ▼
+OperationStore.enqueue()  src/ops/OperationStore.ts  durable INSERT, idempotency dedup
+  │
+  ▼
+Postgres: operations table, status PENDING  ──────►  202 + operationId, to the caller
+  ▲                                                   (caller polls GET /operations/:id)
+  │  claim, SKIP LOCKED
+  │
+Dispatcher claim loop     src/ops/Dispatcher.ts      priority scheduling, lane
+  │                                                   serialization, retry/backoff
+  ▼
+ConnectorManager / facade                     @governance-connector-framework/core
+  │
+  ▼
+target system, via an OpenICF-compatible connector bundle
+  │
+  ▼
+finalize() → Postgres: terminal outcome (SUCCEEDED / REJECTED_PRE_DISPATCH /
+                                          FAILED_CONFIRMED / INDETERMINATE)
+```
+
+- **`src/http/`** — routes (`openapi.yaml`'s contract), bearer-JWT auth,
+  `/healthz`/`/readyz`, NDJSON streaming search, the two boot-time
+  cross-validations.
+- **`src/ops/admission.ts`** — synchronous validation and lane-key
+  assignment, before a mutation is durably queued; this is where a bad
+  request gets rejected fast, not after it's already in the table.
+- **`src/ops/OperationStore.ts`** — the durable operation table: enqueue,
+  claim (`SKIP LOCKED`), finalize, reap rows stranded by a dead dispatcher,
+  partition-aware.
+- **`src/ops/Dispatcher.ts`** — the claim loop: priority scheduling (the
+  reserved interactive slice), lane serialization, retry/backoff, read-back
+  deferral for a create whose outcome timed out (resumes by searching for
+  the object, never re-issues the create).
+- **`src/ops/PartitionMaintainer.ts`** — keeps the table's day-partitions
+  alive and drops retention-expired ones, in-process, no external cron.
+- **`src/provisioning/wiring.ts`** — assembles all of the above into one
+  running process; the only module that knows how to start or stop the
+  whole thing together.
+- **The framework** (`@governance-connector-framework/core`, a separate
+  repo) — connector loading, registry, manager, and facade: executes one
+  connector operation correctly (attempt deadlines, abort propagation,
+  circuit breakers, connection pooling). This service never talks to a
+  connector directly, only through the facade.
 
 ## Design
 
@@ -50,6 +143,24 @@ interleave: `create:<objectClass>:<nameAttrValue>` for creates,
 The HTTP contract is [`openapi.yaml`](./openapi.yaml). Its schema vocabulary
 came from the framework at CP-5; the paths are implemented (Phase P4) and
 that file is now the authority over the plan's prose, not the reverse.
+
+## Documentation
+
+- [`docs/PROVISIONING_SERVICE_PLAN.md`](./docs/PROVISIONING_SERVICE_PLAN.md)
+  — the design record: every phase, what was decided and why, findings
+  recorded in place (strikethrough + explanation) rather than silently
+  changed. A standing **Backlog** section holds work that doesn't block a
+  numbered phase.
+- [`docs/DEPLOYMENT_PLAN.md`](./docs/DEPLOYMENT_PLAN.md) — local Docker
+  through GKE, with HA and DR: the container image, the local-dev and
+  image-build/publish runbooks, and the (not-yet-built) k8s design.
+- [`docs/BUG_LOG.md`](./docs/BUG_LOG.md) — defects found outside the normal
+  review cycle. Append-only in spirit: entries are edited to change status
+  and add resolution notes, not rewritten.
+- [`openapi.yaml`](./openapi.yaml) — the HTTP contract.
+- The framework repo's own `governance-connector-framework_checkpoint_log.md`
+  (a separate repository) records the framework/service boundary decisions
+  (CP-5 onward) this service's design leans on.
 
 ## Development
 
@@ -115,112 +226,17 @@ see `src/http/healthRoutes.ts`.
 ```bash
 bash scripts/preflight.sh   # checks Docker/Compose/ports before anything else does
 docker compose up --build
-docker compose logs jwks   # copy the printed bearer token
+docker compose logs jwks    # copy the printed bearer token
 curl -X POST http://localhost:3000/instances/demo-instance/objects/__ACCOUNT__ \
   -H "Authorization: Bearer <token>" -H 'content-type: application/json' \
   -d '{"attributes":{"__NAME__":"alice"},"priority":"interactive"}'
-curl http://localhost:3000/operations/<operationId> -H "Authorization: Bearer <token>"
 ```
 
-Brings up Postgres, applies the schema (`migrate`, one-shot, via the same
-`scripts/db-setup.sh` real operators use), a throwaway local JWT issuer
-(`jwks` — dev-only, never production, see `scripts/dev-auth.ts`), and the
-service itself, wired to the fixture connector the test suite and soak
-scripts already use (`test/fixtures/connectors`) so there's something real
-to exercise from a clean checkout in one command.
-
-`scripts/preflight.sh` checks what `docker compose up` needs before it
-needs it: Docker installed and its daemon reachable, the Compose v2 plugin
-(not the legacy standalone binary -- `docker-compose.yml`'s `migrate`/`app`
-`depends_on` conditions need it), `docker-compose.yml` actually parsing
-under whatever Compose version is installed, and the three ports it
-publishes (3000, 5432, 4180) not already taken. Reports every problem it
-finds in one run, not just the first.
-
-`Dockerfile`'s `runtime` target (the default) is what a real deployment
-ships: non-root, dev-dependency-free, connector bundles baked in at build
-time rather than mounted — see `docker/connector-bundles/README.md` for how
-a real build supplies real bundles. HA and DR are
-[`DEPLOYMENT_PLAN.md`](./DEPLOYMENT_PLAN.md)'s job, not this compose file's;
-it exists to get a developer from a clean checkout to a working stack, not
-to model production topology.
-
-#### Building and publishing the production image
-
-`docker compose build` above is for local iteration; this is the
-standalone runbook for producing the actual image a deployment ships.
-GKE-specific automation (a CI build-and-push stage) is still unbuilt — see
-`DEPLOYMENT_PLAN.md`'s "CI/CD (sketch, not built)" — so today this is a
-manual sequence, not yet a pipeline step.
-
-```bash
-bash scripts/preflight.sh --publish   # also checks git and gcloud
-```
-
-1. **Supply real connector bundles.** `docker/connector-bundles/` is
-   intentionally empty (this repo doesn't own any real bundle) and the
-   `Dockerfile` bakes its contents in directly, by fixed path — there's no
-   build ARG that can point elsewhere, because Docker's `COPY` can never
-   reach outside the build context regardless of what a `--build-arg`
-   value says (see that directory's own README, which explains this the
-   hard way). Replace its contents before building:
-
-   ```bash
-   rm -rf docker/connector-bundles/*
-   cp -r /path/to/external-connectors/dist/* docker/connector-bundles/
-   docker build -t governance-provisioning-service:local .
-   ```
-
-   Building with the default (empty) bundles directory produces a valid
-   image that boots and answers `/healthz`/`/readyz`, but
-   `loadExternalConnectors` will have nothing to register — fine for
-   verifying the image itself, not for a real deployment.
-
-2. **Smoke-test the image standalone**, against any reachable Postgres
-   with the schema already applied (`scripts/db-setup.sh` — see the
-   Database section above) and a real JWKS. Same env vars as the "Running"
-   section above, just via `docker run` instead of `npx tsx`:
-
-   ```bash
-   docker run --rm -p 3000:3000 \
-     -e DATABASE_URL=postgres://...            \
-     -e APP_CONFIG_DIR=/config                  \
-     -v /path/to/app-configs:/config:ro         \
-     -e JWT_JWKS_URI=https://.../jwks.json      \
-     -e JWT_EXPECTED_ISS=https://issuer:443     \
-     -e JWT_EXPECTED_AUD=provisioning-service   \
-     governance-provisioning-service:local
-   curl http://localhost:3000/healthz
-   curl http://localhost:3000/readyz
-   ```
-
-   `APP_CONFIG_DIR` needs a mounted volume here (it's not baked into the
-   image — see the config-delivery decision in `DEPLOYMENT_PLAN.md`);
-   `CONNECTOR_BUNDLE_DIR` doesn't, since the image already sets it to
-   `/app/connector-bundles` and bundles were baked in at build time above.
-
-3. **Tag and push.** `DEPLOYMENT_PLAN.md`'s sketch: tag by commit SHA
-   (immutable, traceable to the exact source), plus `latest` only on
-   builds from `main`. Example against GCP Artifact Registry (adjust
-   region/project/repo to the target environment — none of this is
-   hardcoded anywhere, this is illustrative):
-
-   ```bash
-   gcloud auth configure-docker REGION-docker.pkg.dev
-   IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/governance-provisioning-service
-   SHA=$(git rev-parse --short HEAD)
-
-   # docker/connector-bundles/ already holds real bundles, per step 1
-   docker build -t "$IMAGE:$SHA" .
-   docker push "$IMAGE:$SHA"
-
-   # only on main:
-   docker tag "$IMAGE:$SHA" "$IMAGE:latest"
-   docker push "$IMAGE:latest"
-   ```
-
-   Any OCI registry works the same way — Artifact Registry is this
-   example's target because the project already runs on GCP (Cloud SQL),
-   not because anything here depends on it specifically.
+Brings up Postgres, applies the schema, a throwaway local JWT issuer, and the
+service itself, wired to the fixture connector the test suite already uses —
+a clean checkout to a working stack in one command. See
+[`docs/DEPLOYMENT_PLAN.md`](./docs/DEPLOYMENT_PLAN.md) for the full guide:
+what each compose service does, the standalone image build-and-publish
+runbook, and the GKE/HA/DR design this local setup leads to.
 
 [fw]: https://github.com/srallapally/governance-connector-framework
