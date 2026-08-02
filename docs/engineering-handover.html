@@ -1,0 +1,485 @@
+
+/
+governance-provisioning-service
+governance-provisioning-service
+
+
+
+
+
+
+
+Recents
+Governance provisioning service review and handover
+27 minutes ago
+Instructions
+Add instructions to tailor Claude’s responses
+
+Memory
+Only you
+Project memory will show here after a few chats.
+
+Context
+2% of project capacity used
+
+engineering-handover.html
+443 lines
+
+html
+
+
+
+architecture-overview.html
+305 lines
+
+html
+
+
+
+security-review.html
+250 lines
+
+html
+
+
+<!-- /mnt/user-data/outputs/engineering-handover.html -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>governance-provisioning-service — Engineering Handover</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root{
+            --ink:#12141A; --paper:#EFF1F4; --panel:#FFFFFF; --line:#D8DBE1; --muted:#5C6470;
+            --accent:#2451E0; --accent-soft:#E7ECFD;
+            --ok:#157F4B; --ok-soft:#E4F5EC;
+            --warn:#B5750D; --warn-soft:#FBF0DD;
+            --bad:#B23A2E; --bad-soft:#FBE7E4;
+            --ind:#6A4FC2; --ind-soft:#EEE9FA;
+            --code-bg:#12141A; --code-ink:#E7E9EE; --code-accent:#8FB0FF;
+            --radius:6px;
+        }
+        *{box-sizing:border-box;}
+        body{
+            margin:0; background:var(--paper); color:var(--ink);
+            font-family:'IBM Plex Sans',sans-serif; font-size:16px; line-height:1.65;
+            -webkit-font-smoothing:antialiased;
+        }
+        code, .mono, .badge, .kbd{ font-family:'IBM Plex Mono',monospace; }
+
+        /* ---- shell layout ---- */
+        .shell{ display:grid; grid-template-columns:260px minmax(0,820px); gap:0; max-width:1180px; margin:0 auto; }
+        nav.toc{
+            position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+            padding:36px 20px 36px 28px; border-right:1px solid var(--line);
+        }
+        nav.toc .tocTitle{ font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:14px; font-weight:600;}
+        nav.toc ol{ list-style:none; margin:0; padding:0; counter-reset:toc; }
+        nav.toc li{ counter-increment:toc; margin-bottom:2px; }
+        nav.toc a{
+            display:flex; gap:8px; text-decoration:none; color:var(--ink); font-size:13.5px;
+            padding:6px 8px; border-radius:5px;
+        }
+        nav.toc a::before{
+            content: counter(toc);
+            font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--accent);
+            width:16px; flex:none;
+        }
+        nav.toc a:hover{ background:var(--accent-soft); }
+
+        main{ padding:44px 40px 120px; min-width:0; }
+
+        /* ---- header ---- */
+        .doctitle{ margin-bottom:10px; }
+        .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.06em; color:var(--accent); text-transform:uppercase; }
+        h1{ font-size:34px; line-height:1.15; margin:6px 0 8px; letter-spacing:-0.01em; }
+        .subtitle{ color:var(--muted); font-size:16px; max-width:640px; }
+
+        /* lane motif: small strip of colored ticks representing the four terminal
+           outcomes plus the two non-terminal states, used once as the signature
+           element beneath the header. */
+        .lanes{ display:flex; gap:3px; margin:26px 0 34px; height:10px; }
+        .lanes span{ flex:1; border-radius:2px; opacity:.85; }
+        .lanes .pending{background:var(--muted);}
+        .lanes .running{background:var(--accent);}
+        .lanes .await{background:var(--ind);}
+        .lanes .ok{background:var(--ok);}
+        .lanes .rej{background:#8B8F98;}
+        .lanes .bad{background:var(--bad);}
+        .lanes .ind{background:var(--warn);}
+
+        section{ padding-top:56px; margin-top:0; border-top:1px solid var(--line); }
+        section:first-of-type{ border-top:none; padding-top:0;}
+        h2{ font-size:22px; margin:0 0 4px; letter-spacing:-.01em; }
+        h2 .num{ color:var(--accent); font-family:'IBM Plex Mono',monospace; font-size:15px; margin-right:10px; }
+        .q{ color:var(--muted); font-size:13.5px; margin:0 0 22px; font-style:italic; }
+        h3{ font-size:16.5px; margin:28px 0 10px; }
+        p{ margin:0 0 14px; }
+        ul, ol{ margin:0 0 16px; padding-left:22px; }
+        li{ margin-bottom:6px; }
+        strong{ font-weight:600; }
+        a{ color:var(--accent); }
+
+        .card{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; margin:16px 0; }
+        .callout{ border-left:3px solid var(--accent); background:var(--accent-soft); padding:12px 16px; border-radius:0 var(--radius) var(--radius) 0; margin:16px 0; font-size:14.5px; }
+        .callout.warn{ border-color:var(--warn); background:var(--warn-soft); }
+        .callout.bad{ border-color:var(--bad); background:var(--bad-soft); }
+
+        table{ width:100%; border-collapse:collapse; margin:16px 0 24px; font-size:14.5px; }
+        th{ text-align:left; font-size:11.5px; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); padding:8px 12px; border-bottom:1px solid var(--line); }
+        td{ padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+        tr:last-child td{ border-bottom:none; }
+        td code, th code{ background:none; padding:0; }
+
+        code{ background:#E4E7EC; padding:1px 5px; border-radius:4px; font-size:.87em; }
+        pre{
+            background:var(--code-bg); color:var(--code-ink); padding:16px 18px; border-radius:var(--radius);
+            overflow-x:auto; font-size:13px; line-height:1.6; margin:16px 0;
+        }
+        pre code{ background:none; padding:0; color:inherit; }
+
+        .badge{
+            display:inline-block; font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:4px;
+            letter-spacing:.02em; white-space:nowrap;
+        }
+        .b-pending{ background:#E9EAEC; color:#3A3F49; }
+        .b-running{ background:var(--accent-soft); color:var(--accent); }
+        .b-await{ background:var(--ind-soft); color:var(--ind); }
+        .b-ok{ background:var(--ok-soft); color:var(--ok); }
+        .b-rej{ background:#EDEEF0; color:#4B4F58; }
+        .b-bad{ background:var(--bad-soft); color:var(--bad); }
+        .b-ind{ background:var(--warn-soft); color:var(--warn); }
+
+        .filepath{ color:var(--muted); font-size:12.5px; }
+        .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+        @media (max-width:840px){ .grid2{grid-template-columns:1fr;} }
+
+        svg text{ font-family:'IBM Plex Mono',monospace; }
+        .diagram{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:20px; margin:20px 0; overflow-x:auto; }
+        .diagram-caption{ font-size:12.5px; color:var(--muted); margin-top:10px; }
+
+        footer{ padding:40px; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line); }
+
+        @media (max-width:900px){
+            .shell{ grid-template-columns:1fr; }
+            nav.toc{ position:relative; height:auto; border-right:none; border-bottom:1px solid var(--line); }
+        }
+    </style>
+</head>
+<body>
+<div class="shell">
+    <nav class="toc">
+        <div class="tocTitle">On this page</div>
+        <ol>
+            <li><a href="#overview">How it works</a></li>
+            <li><a href="#components">Components</a></li>
+            <li><a href="#flow">Operation flow, end to end</a></li>
+            <li><a href="#ops">Supported operations</a></li>
+            <li><a href="#perop">Flow per operation type</a></li>
+            <li><a href="#states">Operation states</a></li>
+            <li><a href="#scaling">Scaling model</a></li>
+            <li><a href="#failure">Failure and retry</a></li>
+        </ol>
+    </nav>
+
+    <main>
+        <div class="doctitle">
+            <div class="eyebrow">Engineering handover</div>
+            <h1>governance-provisioning-service</h1>
+            <p class="subtitle">A durable, async provisioning queue over the governance connector framework. This document is derived from a direct read of the source at <code>srallapally/governance-provisioning-service</code> (branch <code>main</code>), not from its planning docs — file references are given throughout so claims can be checked against the code.</p>
+        </div>
+        <div class="lanes">
+            <span class="pending" title="PENDING"></span><span class="running" title="RUNNING"></span><span class="await" title="AWAITING_READBACK"></span>
+            <span class="ok" title="SUCCEEDED"></span><span class="rej" title="REJECTED_PRE_DISPATCH"></span><span class="bad" title="FAILED_CONFIRMED"></span><span class="ind" title="INDETERMINATE"></span>
+        </div>
+
+        <!-- 1 -->
+        <section id="overview">
+            <h2><span class="num">01</span>How it works</h2>
+            <p class="q">What does this service actually do?</p>
+
+            <p>The service is a claim-based work queue sitting in front of the governance connector framework's per-target facades (create/update/delete/search against an external system such as an HR system, AD, or a SaaS app). Callers <strong>enqueue</strong> a mutation over HTTP and immediately get back <code>202</code> with an <code>operationId</code>; a background <strong>dispatcher</strong> claims rows from a Postgres-backed table and executes them against the target through the framework, one attempt at a time, at a rate the target's configured concurrency budget allows.</p>
+
+            <p>The repository's own README states the boundary precisely: this service owns <em>the claim loop</em> — the durable operation table, the dispatcher, the admission gate, and the HTTP surface. The framework owns <em>executing one operation correctly</em> — attempt deadlines, abort propagation, circuit breakers, connection pooling. Everything in this document is on this service's side of that line; the framework itself is out of scope for this handover.</p>
+
+            <div class="callout">
+                Four terminal outcomes exist, deliberately distinct because the operational remedy differs per outcome: <span class="badge b-ok">SUCCEEDED</span>, <span class="badge b-rej">REJECTED_PRE_DISPATCH</span> (never reached the target — safe to retry wholesale), <span class="badge b-bad">FAILED_CONFIRMED</span> (target refused — will refuse again until the input changes), <span class="badge b-ind">INDETERMINATE</span> (deadline expired with no answer — only reconciliation can settle it). This distinction is the organizing idea of the whole codebase; see §6 and §8.
+            </div>
+
+            <p>Writes to one object never interleave. Every operation is assigned a <strong>lane key</strong> — <code>create:&lt;objectClass&gt;:&lt;nameAttrValue&gt;</code> for creates, <code>uid:&lt;objectClass&gt;:&lt;uid&gt;</code> for update/delete/deltas — and the claim query refuses to let two operations on the same lane run concurrently, or let a second one jump ahead while the first's outcome is still unresolved. <span class="filepath">src/ops/admission.ts (laneKeyFor), src/ops/OperationStore.ts (CLAIM_SQL)</span>
+            </p>
+        </section>
+
+        <!-- 2 -->
+        <section id="components">
+            <h2><span class="num">02</span>Components</h2>
+            <p class="q">What are the moving parts?</p>
+
+            <table>
+                <tr><th>Component</th><th>File</th><th>Responsibility</th></tr>
+                <tr><td><strong>OperationStore</strong></td><td class="filepath">src/ops/OperationStore.ts</td><td>All durable state. Enqueue (idempotent), claim (the <code>CLAIM_SQL</code> CTE — lane exclusion, per-instance/per-priority caps, <code>FOR UPDATE SKIP LOCKED</code>), finalize (terminal write + history row, one transaction), requeue, defer-for-readback, reap-stale, status lookup.</td></tr>
+                <tr><td><strong>Dispatcher</strong></td><td class="filepath">src/ops/Dispatcher.ts</td><td>The claim loop itself. Runs on a timer (default 25&nbsp;ms), computes per-instance availability, claims a batch, executes each op against a leased connector, resolves the outcome, and writes it back. Also runs the stale-row reaper on its own slower cadence.</td></tr>
+                <tr><td><strong>admission</strong></td><td class="filepath">src/ops/admission.ts</td><td>The enqueue-side gate. Checks PENDING backlog depth for the instance/priority against a cap (429 if over) and derives the lane key.</td></tr>
+                <tr><td><strong>HTTP surface</strong></td><td class="filepath">src/http/*.ts</td><td>Express 5 app. <code>objectsRoutes.ts</code> — 5 mutation routes (202) + get/search (synchronous, streamed NDJSON). <code>operationsRoutes.ts</code> — poll-only status. <code>auth.ts</code> — bearer JWT verification. <code>filter.ts</code> — the search query-string grammar. <code>errors.ts</code> — central error→HTTP mapping.</td></tr>
+                <tr><td><strong>ApplicationRegistrar</strong></td><td class="filepath">src/config/registerApplication.ts</td><td>Lazily registers a connector instance the first time any operation names it; on a config version change, drains outstanding leases before rebuilding the instance.</td></tr>
+                <tr><td><strong>ApplicationConfigStore</strong></td><td class="filepath">src/config/FileApplicationConfigStore.ts</td><td>Default implementation: one JSON file per application id, version = content hash. An IGA-repository-backed store is the intended production replacement behind the same interface (not yet built).</td></tr>
+                <tr><td><strong>scheduling</strong></td><td class="filepath">src/config/scheduling.ts</td><td>Parses the per-instance <code>interactiveSliceFraction</code> and per-op <code>rateLimits</code> — the half of an instance's runtime config the framework doesn't own.</td></tr>
+                <tr><td><strong>PartitionMaintainer</strong></td><td class="filepath">src/ops/PartitionMaintainer.ts</td><td>Hourly in-process job: creates today's/tomorrow's day-partitions, drops partitions past retention that are fully terminal, emits a "days ahead" gauge.</td></tr>
+                <tr><td><strong>wiring / index</strong></td><td class="filepath">src/provisioning/wiring.ts, src/index.ts</td><td>Assembles everything into one process from env vars; owns startup validation and the SIGTERM/SIGINT drain sequence. <code>wiring.ts</code> has no HTTP surface by design; <code>index.ts</code> is the only file that touches <code>process.on(...)</code>.</td></tr>
+                <tr><td><strong>governance-connector-framework/core</strong></td><td class="filepath">vendor/*.tgz (external)</td><td>Not part of this repo. Supplies <code>ConnectorRegistry</code>, <code>ConnectorManager</code>/leases, the per-attempt facade (<code>create</code>/<code>update</code>/<code>delete</code>/<code>search</code>/<code>schema</code>), deadlines, circuit breakers, connector loading. Vendored as a pinned local tarball rather than pulled from a registry.</td></tr>
+            </table>
+
+            <div class="diagram">
+                <svg viewBox="0 0 760 330" width="100%" xmlns="http://www.w3.org/2000/svg">
+                    <style>
+                        .box{fill:#FFFFFF;stroke:#D8DBE1;stroke-width:1;rx:6;}
+                        .boxAccent{fill:#E7ECFD;stroke:#2451E0;stroke-width:1.2;rx:6;}
+                        .lbl{font-size:12px;fill:#12141A;font-weight:600;}
+                        .sub{font-size:10px;fill:#5C6470;}
+                        .arrow{stroke:#8B8F98;stroke-width:1.3;fill:none;marker-end:url(#arrow);}
+                    </style>
+                    <defs>
+                        <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8B8F98"/></marker>
+                    </defs>
+
+                    <rect x="20" y="20" width="150" height="52" class="box"/>
+                    <text x="35" y="42" class="lbl">Caller</text>
+                    <text x="35" y="58" class="sub">IGA / orchestrator</text>
+
+                    <rect x="220" y="20" width="180" height="52" class="boxAccent"/>
+                    <text x="235" y="42" class="lbl">HTTP surface</text>
+                    <text x="235" y="58" class="sub">auth.ts · objectsRoutes.ts</text>
+
+                    <rect x="460" y="20" width="170" height="52" class="box"/>
+                    <text x="475" y="42" class="lbl">admission</text>
+                    <text x="475" y="58" class="sub">backlog cap · lane key</text>
+
+                    <rect x="460" y="110" width="170" height="52" class="boxAccent"/>
+                    <text x="475" y="132" class="lbl">OperationStore</text>
+                    <text x="475" y="148" class="sub">operations table (Postgres)</text>
+
+                    <rect x="220" y="200" width="180" height="52" class="boxAccent"/>
+                    <text x="235" y="222" class="lbl">Dispatcher</text>
+                    <text x="235" y="238" class="sub">claim loop, 25ms tick</text>
+
+                    <rect x="20" y="200" width="150" height="52" class="box"/>
+                    <text x="35" y="222" class="lbl">Reaper</text>
+                    <text x="35" y="238" class="sub">stale RUNNING recovery</text>
+
+                    <rect x="460" y="200" width="170" height="52" class="box"/>
+                    <text x="475" y="222" class="lbl">ConnectorManager</text>
+                    <text x="475" y="238" class="sub">lease · facade (framework)</text>
+
+                    <rect x="460" y="290" width="170" height="30" class="box"/>
+                    <text x="475" y="309" class="lbl" style="font-size:11px;">Target system</text>
+
+                    <rect x="220" y="290" width="180" height="30" class="box"/>
+                    <text x="235" y="309" class="lbl" style="font-size:11px;">operations_history</text>
+
+                    <path d="M170,46 H220" class="arrow"/>
+                    <path d="M400,46 H460" class="arrow"/>
+                    <path d="M545,72 V110" class="arrow"/>
+                    <path d="M460,136 H400" class="arrow"/>
+                    <path d="M310,200 V252" class="arrow"/>
+                    <path d="M310,200 V110 H460" class="arrow" style="stroke-dasharray:3,3;"/>
+                    <path d="M170,226 H220" class="arrow"/>
+                    <path d="M400,226 H460" class="arrow"/>
+                    <path d="M545,252 V290" class="arrow"/>
+                    <path d="M310,252 V290" class="arrow"/>
+                </svg>
+                <p class="diagram-caption">Solid arrows: request/write path. Dashed: dispatcher claims directly from the store (polling, not a push).</p>
+            </div>
+        </section>
+
+        <!-- 3 -->
+        <section id="flow">
+            <h2><span class="num">03</span>Operation flow, end to end</h2>
+            <p class="q">What does the flow of a provisioning operation look like?</p>
+
+            <ol>
+                <li><strong>Request.</strong> Caller sends <code>POST /instances/:instanceId/objects/:objectClass</code> (or PUT/DELETE/add-values/remove-values) with a bearer JWT. <span class="filepath">src/http/objectsRoutes.ts</span></li>
+                <li><strong>Auth.</strong> <code>requireJwt()</code> validates the token against a JWKS-fetched key, issuer, audience, algorithm allowlist, clock skew, and max age <em>before any route runs</em> — mounted ahead of every router, including status. <span class="filepath">src/http/auth.ts</span></li>
+                <li><strong>Lazy registration.</strong> <code>ensureApplication(instanceId)</code> runs for every request against that instance. First time an id is seen, its config is fetched from the <code>ApplicationConfigStore</code> and registered with the connector registry; on later requests this is a cache hit. <span class="filepath">src/config/registerApplication.ts</span></li>
+                <li><strong>Synchronous validation.</strong> For CREATE, the route resolves the object class's naming attribute (schema call through a leased connector) and rejects with <code>400</code> if the request body doesn't carry it — this is the one piece of validation that happens before the caller's connection is released, because the read-back protocol depends on it existing.</li>
+                <li><strong>Admission.</strong> <code>admitAndEnqueue()</code> reads current PENDING+AWAITING_READBACK depth for <code>(instanceId, priority)</code>; over the cap (1,000 interactive / 10,000 batch, by default) → <code>429</code> with the observed depth. Otherwise the lane key is computed and the row is inserted. <span class="filepath">src/ops/admission.ts</span></li>
+                <li><strong>Enqueue.</strong> Insert is idempotency-key-deduplicated under a transaction-scoped Postgres advisory lock (not a unique index — see §7 for why). Row starts <code>PENDING</code>, <code>attempt_count = 0</code>. <span class="filepath">OperationStore.enqueue</span></li>
+                <li><strong>202 response.</strong> Caller gets <code>{ operationId, status: "PENDING", idempotencyKey }</code> immediately. Nothing has run yet.</li>
+                <li><strong>Claim.</strong> On its next tick, the dispatcher's <code>claimBatch</code> query picks up to <code>claimBatchSize</code> (default 100) eligible rows across all registered instances — respecting per-instance/per-priority caps, excluding busy lanes, one row per lane per cycle — and marks them <code>RUNNING</code> under <code>FOR UPDATE SKIP LOCKED</code>. <span class="filepath">Dispatcher.runCycle → OperationStore.claimBatch</span></li>
+                <li><strong>Lease + attempt.</strong> The dispatcher acquires a connector lease for the instance and calls the matching facade method (<code>create</code>/<code>update</code>/<code>delete</code>/<code>addAttributeValues</code>/<code>removeAttributeValues</code>) with an attempt deadline. See §5 for the per-op-type resolution logic.</li>
+                <li><strong>Finalize.</strong> The attempt's outcome is written back in one transaction that also inserts the slim <code>operations_history</code> row — a record can never reach terminal status without its permanent counterpart existing. <span class="filepath">OperationStore.finalize</span></li>
+                <li><strong>Poll.</strong> Caller polls <code>GET /operations/:operationId</code> for status; this is poll-only — there is no webhook/callback path in this codebase. Falls back to <code>operations_history</code> once the hot row ages out of its partition. <span class="filepath">src/http/operationsRoutes.ts</span></li>
+            </ol>
+
+            <div class="callout">Reads (<code>GET .../:uid</code> and the streaming search) never touch the operation table at all — they acquire a lease and call the facade synchronously, in the request. Only the five mutation routes are async.</div>
+        </section>
+
+        <!-- 4 -->
+        <section id="ops">
+            <h2><span class="num">04</span>Supported operations</h2>
+            <p class="q">What operations does it support?</p>
+
+            <table>
+                <tr><th>Type</th><th>HTTP</th><th>Path style</th><th>Notes</th></tr>
+                <tr><td><code>CREATE</code></td><td>202 (async)</td><td><code>POST .../objects/:objectClass</code></td><td>Requires the naming attribute in the body; keys its lane on that value, not a uid (none exists yet).</td></tr>
+                <tr><td><code>UPDATE</code></td><td>202 (async)</td><td><code>PUT .../objects/:objectClass/:uid</code></td><td>Always a full attribute replace — this is what makes it safe to retry blindly after a timeout.</td></tr>
+                <tr><td><code>DELETE</code></td><td>202 (async)</td><td><code>DELETE .../objects/:objectClass/:uid</code></td><td>Idempotent by construction: a target reporting "unknown uid" on delete is treated as success.</td></tr>
+                <tr><td><code>ADD_VALUES</code></td><td>202 (async)</td><td><code>POST .../:uid/add-values</code></td><td>Delta against a multi-valued attribute (ICF <code>UpdateAttributeValuesOp</code> model), not a flagged update. Retry gated on a connector-declared capability — see §5.</td></tr>
+                <tr><td><code>REMOVE_VALUES</code></td><td>202 (async)</td><td><code>POST .../:uid/remove-values</code></td><td>Same gate as ADD_VALUES.</td></tr>
+                <tr><td>Get one</td><td>200 (sync)</td><td><code>GET .../objects/:objectClass/:uid</code></td><td>Not enqueued. Direct leased-facade read.</td></tr>
+                <tr><td>Search</td><td>200, NDJSON stream (sync)</td><td><code>GET .../objects/:objectClass?filter=...</code></td><td>Not enqueued. Backpressure-aware streaming write; a flat, SCIM-keyword <code>and</code>-only filter grammar (no <code>or</code>/<code>not</code>/parens). <span class="filepath">src/http/filter.ts</span></td></tr>
+            </table>
+
+            <p>Every enqueue also carries an <strong>Idempotency-Key</strong> (client-supplied header, or a server-generated UUID if omitted) and a <strong>priority</strong> — <code>interactive</code> or <code>batch</code>, defaulting to <code>batch</code>. Priority determines admission cap and claim ordering, not correctness.</p>
+        </section>
+
+        <!-- 5 -->
+        <section id="perop">
+            <h2><span class="num">05</span>Flow per operation type</h2>
+            <p class="q">What is the flow of each operation?</p>
+
+            <h3>CREATE — the read-back protocol</h3>
+            <p>This is the one operation type with genuinely special handling, because a create's target-minted uid means a blind retry after a timeout can silently produce a duplicate account.</p>
+            <ol>
+                <li>Attempt <code>facade.create(objectClass, attrs, options)</code> against an attempt deadline.</li>
+                <li><strong>Success</strong> → <span class="badge b-ok">SUCCEEDED</span>, uid + object persisted.</li>
+                <li><strong><code>ALREADY_EXISTS</code></strong> → <span class="badge b-bad">FAILED_CONFIRMED</span> immediately (confirmed refusal, not retried).</li>
+                <li><strong>Retryable connector error</strong> (before any deadline) → ordinary exponential backoff (§8), up to <code>maxAttempts</code>.</li>
+                <li><strong>Deadline expired</strong> → the target's connector <em>may</em> have applied it. If the connector supports equality search by name, the row moves to <span class="badge b-await">AWAITING_READBACK</span> and is parked — releasing its mutation slot and connector lease, but keeping its lane blocked — until <code>attemptDeadlineMs.create + readBackGraceMs</code> has elapsed. If the connector cannot search by name, it goes straight to <span class="badge b-ind">INDETERMINATE</span> (no way to check).</li>
+                <li>Once the wait elapses, the dispatcher reclaims the row (still by lane, honoring <code>AWAITING_READBACK</code> as blocking until due) and <strong>searches for the object by its naming attribute</strong> — it never re-issues the create. Found → <span class="badge b-ok">SUCCEEDED</span> (<code>viaReadBack: true</code>). Confirmed absent → exactly one requeue for a second attempt; a second miss → <span class="badge b-ind">INDETERMINATE</span>.</li>
+            </ol>
+            <p class="filepath">Dispatcher.attemptCreate / resolveCreateAfterDeadline / resumeReadBack</p>
+
+            <h3>UPDATE</h3>
+            <p>Always a full replace. <code>UNKNOWN_UID</code> → <span class="badge b-bad">FAILED_CONFIRMED</span>. Any other retryable failure, including a deadline, goes through ordinary backoff — replace semantics make replaying safe, so there is no read-back step here.</p>
+
+            <h3>DELETE</h3>
+            <p><code>UNKNOWN_UID</code> is treated as <span class="badge b-ok">SUCCEEDED</span> (<code>alreadyAbsent: true</code>) — the desired end state, object absent, has been reached. Any other retryable failure backs off and retries; delete is idempotent by the same logic as update.</p>
+
+            <h3>ADD_VALUES / REMOVE_VALUES</h3>
+            <p>Missing uid → <span class="badge b-rej">REJECTED_PRE_DISPATCH</span> before dispatch. <code>UNKNOWN_UID</code> → <span class="badge b-bad">FAILED_CONFIRMED</span>. On a retryable failure, the dispatcher checks the connector's declared <code>idempotentDelta</code> capability: if the manifest doesn't assert the target applies deltas with set semantics, a retry could silently double-apply the grant (a privilege change), so it goes to <span class="badge b-ind">INDETERMINATE</span> with zero retries instead. Only a connector that explicitly declares idempotent delta semantics gets ordinary backoff here. There is no read-back for deltas — no naming attribute to search on — reconciliation is the only backstop.</p>
+            <p class="filepath">Dispatcher.attemptDelta</p>
+        </section>
+
+        <!-- 6 -->
+        <section id="states">
+            <h2><span class="num">06</span>Operation states</h2>
+            <p class="q">What are the states of each operation?</p>
+
+            <div class="diagram">
+                <svg viewBox="0 0 760 300" width="100%" xmlns="http://www.w3.org/2000/svg">
+                    <style>
+                        .st{stroke-width:1.3; rx:8;}
+                        .stP{fill:#E9EAEC; stroke:#9CA0A8;}
+                        .stR{fill:#E7ECFD; stroke:#2451E0;}
+                        .stA{fill:#EEE9FA; stroke:#6A4FC2;}
+                        .stOK{fill:#E4F5EC; stroke:#157F4B;}
+                        .stREJ{fill:#EDEEF0; stroke:#7A7F88;}
+                        .stBAD{fill:#FBE7E4; stroke:#B23A2E;}
+                        .stIND{fill:#FBF0DD; stroke:#B5750D;}
+                        .lbl{font-size:12.5px; font-weight:600; fill:#12141A; text-anchor:middle;}
+                        .e{stroke:#8B8F98; stroke-width:1.2; fill:none; marker-end:url(#a2);}
+                        .elabel{font-size:9.5px; fill:#5C6470;}
+                    </style>
+                    <defs><marker id="a2" markerWidth="7" markerHeight="7" refX="5" refY="2.5" orient="auto"><path d="M0,0 L5,2.5 L0,5 Z" fill="#8B8F98"/></marker></defs>
+
+                    <rect x="20" y="120" width="110" height="46" class="st stP"/><text x="75" y="147" class="lbl">PENDING</text>
+                    <rect x="200" y="120" width="110" height="46" class="st stR"/><text x="255" y="147" class="lbl">RUNNING</text>
+
+                    <rect x="200" y="20" width="150" height="46" class="st stA"/><text x="275" y="47" class="lbl">AWAITING_READBACK</text>
+
+                    <rect x="440" y="20" width="150" height="40" class="st stOK"/><text x="515" y="45" class="lbl">SUCCEEDED</text>
+                    <rect x="440" y="72" width="150" height="40" class="st stREJ"/><text x="515" y="97" class="lbl" style="font-size:10.5px;">REJECTED_PRE_DISPATCH</text>
+                    <rect x="440" y="124" width="150" height="40" class="st stBAD"/><text x="515" y="149" class="lbl" style="font-size:11px;">FAILED_CONFIRMED</text>
+                    <rect x="440" y="176" width="150" height="40" class="st stIND"/><text x="515" y="201" class="lbl">INDETERMINATE</text>
+
+                    <path d="M130,143 H200" class="e"/><text x="140" y="135" class="elabel">claim</text>
+                    <path d="M310,138 C 360,138 400,110 440,92" class="e"/>
+                    <path d="M310,138 H440 " class="e" style="transform:translateY(6px)"/>
+                    <path d="M255,120 V90" class="e"/><text x="262" y="105" class="elabel">create timeout,<br/>readback possible</text>
+                    <path d="M275,66 H420 V40 H440" class="e"/>
+                    <path d="M130,143 C 90,190 90,230 200,260" class="e" style="transform:translate(0,-90px)"/>
+                    <path d="M255,166 C 255,230 90,230 90,166" class="e"/><text x="120" y="235" class="elabel">requeue (backoff)</text>
+                    <path d="M255,20 C 90,0 40,60 65,120" class="e" style="stroke-dasharray:3,3;"/><text x="30" y="70" class="elabel">reap: dead dispatcher</text>
+                </svg>
+                <p class="diagram-caption">Simplified — see the transition table below for the exact source of each edge.</p>
+            </div>
+
+            <table>
+                <tr><th>State</th><th>Terminal?</th><th>Meaning</th><th>Reached from</th></tr>
+                <tr><td><span class="badge b-pending">PENDING</span></td><td>No</td><td>Enqueued, not yet claimed (or requeued after backoff/reap).</td><td>enqueue; requeue; reap (non-create)</td></tr>
+                <tr><td><span class="badge b-running">RUNNING</span></td><td>No</td><td>Claimed by a dispatcher, attempt in progress.</td><td>claim</td></tr>
+                <tr><td><span class="badge b-await">AWAITING_READBACK</span></td><td>No</td><td>A create whose attempt deadline expired; parked until safe to search by name. Blocks its lane durably (survives a process restart) until <code>not_before</code> elapses.</td><td>create deadline expiry</td></tr>
+                <tr><td><span class="badge b-ok">SUCCEEDED</span></td><td>Yes</td><td>Target applied it (directly, or confirmed via read-back). No remedy needed.</td><td>successful attempt; readback hit; delete-on-absent</td></tr>
+                <tr><td><span class="badge b-rej">REJECTED_PRE_DISPATCH</span></td><td>Yes</td><td>Never reached the target — connector lease/build failure, or a delta missing its uid. Safe to retry wholesale (as a new operation).</td><td>lease acquisition failure; missing uid on delta</td></tr>
+                <tr><td><span class="badge b-bad">FAILED_CONFIRMED</span></td><td>Yes</td><td>The target explicitly refused (e.g. <code>ALREADY_EXISTS</code>, <code>UNKNOWN_UID</code> on update/delta, a non-retryable connector error, or backoff exhausted on a target-confirmed rejection path). Will fail again until the input changes.</td><td>confirmed connector error; attempt-cap exhaustion on a confirmed-failure path</td></tr>
+                <tr><td><span class="badge b-ind">INDETERMINATE</span></td><td>Yes</td><td>The outcome could not be established — deadline with no read-back possible, read-back miss twice, a non-idempotent delta on a retryable error, or attempt-cap exhaustion on a genuinely unknown path. Only reconciliation (out of scope for this service) can settle it.</td><td>various — see §5, §8</td></tr>
+            </table>
+        </section>
+
+        <!-- 7 -->
+        <section id="scaling">
+            <h2><span class="num">07</span>Scaling model</h2>
+            <p class="q">How does it scale?</p>
+
+            <h3>Horizontally, without coordination</h3>
+            <p>Multiple dispatcher replicas run against the same Postgres table with <strong>no leader election and no external lock</strong>. The claim query uses <code>FOR UPDATE OF o SKIP LOCKED</code>: two replicas racing the same backlog simply partition it — each takes what the other hasn't already locked. A replica that dies mid-cycle loses only the rows it had claimed (they're picked up by the reaper, §8). This is the entire scale-out story for the dispatcher; there is nothing else to configure to add a replica.</p>
+            <p class="filepath">Dispatcher.ts header comment; OperationStore.claimBatch (CLAIM_SQL)</p>
+
+            <h3>Per-instance concurrency budget</h3>
+            <p>Each connector instance (application) has a <code>mutationConcurrency</code> ceiling (framework-owned, part of its runtime config) that bounds how many attempts against that target can be in flight at once, cluster-wide — enforced by the claim query's per-instance cap, computed fresh every cycle from the dispatcher's own in-memory in-flight count.</p>
+
+            <h3>Interactive / batch reservation</h3>
+            <p>Within that budget, an <code>interactiveSliceFraction</code> (default 0.2) reserves a slice of mutation slots that <strong>batch work may not draw from</strong> — interactive work may use the whole budget, batch is capped at budget minus the slice. This is enforced as a hard claim-time cap (<code>batchFree</code>/<code>totalFree</code> in <code>InstanceAvailability</code>), not merely a claim-ordering preference — see <strong>BUG-4</strong> in the bug log, where an ordering-only version passed load tests by coincidence but failed under real saturation.</p>
+
+            <h3>Rate limiting per operation kind</h3>
+            <p>An instance can declare a token-bucket rate limit per op kind (<code>create</code>/<code>update</code>/<code>delete</code>); checked before claiming, not before the attempt, so a rate-limited row isn't claimed and held — it simply isn't offered that cycle.</p>
+
+            <h3>Admission as the flow-control signal</h3>
+            <p>Rather than an unbounded queue absorbing more work than the drain rate can clear, the enqueue path rejects with <code>429</code> once PENDING+AWAITING_READBACK depth for an instance/priority hits its cap, returning the observed depth so the caller can back off deliberately. This check is advisory under concurrency (a small overshoot is accepted as cheaper than serializing every enqueue).</p>
+
+            <h3>Data layer</h3>
+            <p>The operation table is <strong>range-partitioned by day</strong>, with a documented 24-hour hot retention window; partitions are created/dropped by an in-process hourly job, not an external cron. This bounds the hot table's size regardless of throughput, keeping the claim query's working set — and its partial index — small and roughly constant. The dispatcher's own Postgres pool is sized independently of any HTTP-layer pool (<code>dispatcherPoolMax</code>, default 5) and carries a <code>statement_timeout</code>.</p>
+
+            <div class="callout">A soak run against a real Cloud SQL instance is referenced in the README as verifying ~1,168 ops/s sustained, with the config-store read-per-operation cost specifically called out as a hot-path concern worth caching (resolve once per attempt, at claim time; cache by <code>(applicationId, version)</code>).</div>
+        </section>
+
+        <!-- 8 -->
+        <section id="failure">
+            <h2><span class="num">08</span>Failure and retry</h2>
+            <p class="q">How does it handle failure and retry?</p>
+
+            <h3>The outcome taxonomy is the retry policy</h3>
+            <p>Rather than one generic "retry on failure," every failure is classified into one of the four terminal outcomes (§6) or a transient <code>REQUEUE</code>/<code>DEFER_READBACK</code>, and the classification <em>is</em> the retry decision:</p>
+            <ul>
+                <li><span class="badge b-rej">REJECTED_PRE_DISPATCH</span> — nothing happened at the target; safe to resubmit as a fresh operation.</li>
+                <li><span class="badge b-bad">FAILED_CONFIRMED</span> — the target explicitly refused; retrying without changing the input will fail again, so the dispatcher doesn't.</li>
+                <li><strong>REQUEUE</strong> (non-terminal, internal) — a retryable connector error or an idempotent-operation deadline. Exponential backoff: <code>min(backoffMaxMs, backoffBaseMs × 2^attemptCount)</code>, default base 1s / ceiling 60s, up to <code>maxAttempts</code> (default 5), after which it becomes <span class="badge b-bad">FAILED_CONFIRMED</span> or <span class="badge b-ind">INDETERMINATE</span> depending on the path. The backoff is enforced by excluding the <em>lane</em> from claiming until the delay elapses — not by an in-process sleep — so it survives a process restart and doesn't hold a connector lease or mutation slot while waiting.</li>
+                <li><span class="badge b-ind">INDETERMINATE</span> — genuinely unknown outcome (deadline with no way to check, or backoff exhausted on an unknown-outcome path). This is a deliberate admission that the dispatcher cannot resolve every case; reconciliation against the target is the documented backstop, and is out of scope for this service.</li>
+            </ul>
+
+            <h3>The reaper — recovering a dead dispatcher's claimed rows</h3>
+            <p>A replica that crashes mid-attempt leaves its claimed rows <code>RUNNING</code> forever, invisible to future claim queries (which only look at <code>PENDING</code>). Left unrecovered this also silently breaks partition retention — the drop gate correctly refuses to drop a partition holding any non-terminal row, so one stranded row pins a whole day's partition open (documented as <strong>BUG-2</strong> in the framework's history). The dispatcher runs a reaper pass on its own cadence (default every 60s, serialized across replicas via a <code>pg_try_advisory_xact_lock</code> so only one runs a pass at a time): rows <code>RUNNING</code> past a threshold (default 10 minutes — must exceed the longest legitimate attempt) are routed by op type — creates go to <code>AWAITING_READBACK</code> (their outcome is unknown, so read-back applies exactly as it would after a live timeout), everything else (idempotent by construction) returns straight to <code>PENDING</code>. Neither path increments <code>attempt_count</code> — the process died, which isn't the operation's fault.</p>
+            <p class="filepath">OperationStore.reapStale; Dispatcher.maybeReap</p>
+
+            <h3>Graceful shutdown</h3>
+            <p>On <code>SIGTERM</code>/<code>SIGINT</code>: the HTTP server closes first (nothing new can enqueue), then <code>dispatcher.stop({drainBudgetMs})</code> waits for in-flight attempts up to a bounded budget (default 8s) — deliberately bounded, because the container has nothing above it that will wait indefinitely, and whatever grace period the deployment grants arrives eventually as <code>SIGKILL</code> regardless. A straggling attempt past that budget is simply left <code>RUNNING</code>, to be recovered by the reaper — the same mechanism that handles a hard crash, not a distinct failure mode. A second-stage grace window then polls in-flight count before disposing connector instances, to avoid tearing one down under a genuinely still-running attempt.</p>
+            <p class="filepath">Dispatcher.stop; provisioning/wiring.ts (stop)</p>
+
+            <h3>Known, fixed defects worth knowing about</h3>
+            <p>The in-repo <code>BUG_LOG.md</code> documents three fixed defects, all directly relevant to correctness under failure:</p>
+            <ul>
+                <li><strong>BUG-4</strong> (medium) — the interactive/batch reservation was computed but never enforced; a batch flood could starve interactive work. Fixed by making it a hard claim-time cap. The regression test deliberately asserts an interactive op starts before an in-flight batch attempt completes — a latency-percentile comparison alone would not have caught this.</li>
+                <li><strong>BUG-7</strong> (medium) — test sources were excluded from typechecking entirely, so a signature change compiled cleanly in tests while silently passing <code>undefined</code>/<code>NaN</code> through to Postgres at runtime. Fixed with a separate <code>tsconfig.test.json</code> run in CI.</li>
+                <li><strong>BUG-8</strong> (high) — a claim cycle racing <code>stop()</code>'s pool closure threw an unhandled rejection that crashed the whole process outright (not just stranded a row) — only reproduced against real Cloud SQL latency, never against local Postgres. Fixed with a catch clause that degrades this to the ordinary reaper-recoverable case.</li>
+            </ul>
+            <div class="callout warn">All three were found through soak testing against a real network-latency database, not local Postgres or unit tests. Local Postgres's near-zero round-trip latency specifically hid BUG-8 for the whole of P0–P7. Worth keeping in mind for any future change to the claim/stop path: local tests alone did not catch this class of bug once.</div>
+        </section>
+
+        <footer>governance-provisioning-service — engineering handover, compiled from a direct source review. Deployment topics (packaging, HA/DR, scale-out infrastructure) are covered separately for the platform team.</footer>
+    </main>
+</div>
+</body>
+</html>
