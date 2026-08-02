@@ -691,24 +691,21 @@ exists, and a partition covers today.
   process and calls `drop_operations_partition`. Whether the service's role
   may execute DDL at runtime is a grant question that passes locally as
   superuser and fails in production. Verify with the *service's* role, not an
-  admin one.~~ **NOT YET ANSWERED.** The instance below was reached with the
-  Cloud SQL default `postgres` role (superuser), not a scoped service role,
-  because standing one up wasn't asked for as part of this check. This bullet
-  stays open — a least-privilege role that can only touch `operations`/
-  `operations_history` and the two partition functions still needs to be
-  created and re-run against, before this item can be marked satisfied.
+  admin one.~~ **NOT ANSWERED, moved to Backlog.** The instance below was
+  reached with the Cloud SQL default `postgres` role (superuser), not a
+  scoped service role. See "Backlog" at the end of this file.
 - **Connection path.** ANSWERED for this instance: public IP, direct
   connection (`sslmode=require`, `uselibpqcompat=true` — the instance is
   SSL-only with no client-cert requirement; `pg`'s newer default treats
   `sslmode=require` as `verify-full` and fails without either this flag or a
-  downloaded server CA), no pooler in front. The transaction-pooling-proxy
-  question in the original bullet remains unanswered for any deployment that
-  does put one in front — this instance doesn't.
+  downloaded server CA), no pooler in front. ~~The transaction-pooling-proxy
+  question in the original bullet remains unanswered~~ moved to Backlog — this
+  instance doesn't have one in front, so nothing here exercises it.
 - ~~**Server version.** The DDL is verified on 16.~~ ANSWERED: also verified
   clean on **PostgreSQL 18.4** (Cloud SQL Enterprise, `db-custom-2-8192`,
   `us-central1`) — `scripts/db-setup.sh` fresh-install path and the full pg
   contract suite (57/57) both pass unmodified.
-- **Connection limits.** Still open — not checked against this instance.
+- ~~**Connection limits.**~~ NOT ANSWERED, moved to Backlog.
 - ~~**Latency.** The claim query is a round trip per batch. Local figures
   overstate throughput; record the delta so P8's numbers are read
   correctly.~~ ANSWERED, and it cost a real finding: the pg contract suite's
@@ -727,19 +724,17 @@ exists, and a partition covers today.
   fix was verified by pass/fail at two timeout values, not by timing
   instrumentation); if P8's soak needs a number, measure it there directly.
 
-**Accept:** partially met. `scripts/db-setup.sh` and the full pg contract
-suite both run clean against `iga-prov-db` (PostgreSQL 18.4, Cloud SQL,
-project `iga-provisioning-service`) — but with the `postgres` superuser role,
-not a scoped service role, so the role-permissions item above is still open.
-Server version and (indirectly) latency are recorded. Pooling mode is
-recorded for this instance's own topology (none) but the proxy-specific
-question is untested. Connection limits untested.
+**Accept:** partially met, and treated as sufficient to move on. `scripts/db-setup.sh`
+and the full pg contract suite both run clean against `iga-prov-db`
+(PostgreSQL 18.4, Cloud SQL, project `iga-provisioning-service`). Server
+version and (indirectly) latency are recorded. The three items that needed
+either a service-role grant or a deployment topology this instance doesn't
+have (scoped role, connection limits, pooling-proxy behavior) are moved to
+"Backlog" at the end of this file rather than left blocking here.
 
 **Blocked:** no longer blocked on instance availability — `iga-prov-db`
 exists and is reachable from a machine with normal internet egress (this
-sandboxed session itself cannot reach it directly; see below). Still open:
-scoped service role, connection limits, and pooling-proxy behavior if a
-deployment puts one in front.
+sandboxed session itself cannot reach it directly; see below).
 
 **Note on how this was run:** this Claude Code session's own sandbox cannot
 reach Cloud SQL at all — its outbound network is an HTTPS CONNECT-only proxy
@@ -928,3 +923,29 @@ Framework PR `feature/async-provisioning` → `main`; publish
 this repo's git dep for the published version; external-connectors CI pins the
 published core for type builds. Production rollout; sidecar threshold waits on
 real metrics.
+
+## Backlog
+
+Items that don't block any numbered phase but shouldn't be forgotten. Move an
+item out of here (back into a phase, or to "done") when something picks it up.
+
+- **Scoped least-privilege service role for Cloud SQL.** P3's role-permissions
+  check (whether the service's own role, not an admin one, may execute
+  runtime DDL — partition create/drop) was never actually exercised: the P3
+  verification run against `iga-prov-db` used the Cloud SQL default
+  `postgres` superuser. Create a role limited to `operations`/
+  `operations_history` and the two partition functions, and rerun the pg
+  contract suite and `scripts/db-setup.sh` with it before P5 (partition
+  maintenance in-process) ships against this instance.
+- **Connection limits for `iga-prov-db`.** Not checked. The dispatcher pool is
+  deliberately small (`max: 5`, set at P2), so this is unlikely to bind, but
+  the instance's `max_connections` and any per-user cap should be recorded
+  next to that number before relying on it in production.
+- **Transaction-pooling-proxy behavior.** `iga-prov-db` is a direct
+  connection with no pooler in front, so this was never exercised here.
+  `pg_advisory_xact_lock` and `FOR UPDATE SKIP LOCKED` are transaction-scoped
+  and should survive a transaction-pooling proxy (e.g. PgBouncer in
+  transaction mode), but session state and server-side prepared statements do
+  not. Verify against whichever pooling mode, if any, sits in front of the
+  real production topology once that's known — likely alongside P7
+  (configuration) or P8 (integrated soak).
