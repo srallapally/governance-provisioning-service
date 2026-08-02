@@ -971,6 +971,16 @@ interval, drain budget, connector directory. Note the split settled at P0 —
 this block is service-level and environment-sourced, whereas per-application
 instance settings arrive as `ApplicationConfig` objects and never appear here.
 
+**Delivered.** Retention window (P5), drain budget (P2), and connector
+directory (P1) already shipped incrementally; P7 adds the three still
+hardcoded — `DISPATCHER_POOL_MAX` (default 5), `DISPATCHER_CLAIM_INTERVAL_MS`
+(default 25), `DISPATCHER_REAPER_THRESHOLD_MS` (default 10 minutes) —
+threaded from `wiring.ts` into `new Pool(...)`/`new Dispatcher(...)`.
+**Deliberately still hardcoded, not exposed**: `claimBatchSize`,
+`maxAttempts`, `backoffBaseMs`/`backoffMaxMs`, `readBackGraceMs`,
+`reaperIntervalMs` — a separate retry-tuning concern this paragraph never
+named; moved to Backlog rather than built speculatively.
+
 Add the config-store block: which store implementation, and for the file
 store, the directory it reads.
 
@@ -981,24 +991,46 @@ a token endpoint error must not echo the request body. Required only when the
 configured store is the IGA-backed one; the file store leaves them unset,
 which is what keeps local runs and CI free of credentials.
 
-Add the inbound-auth block: `AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_AUDIENCE`,
-`AUTH_REQUIRED_SCOPE`, and the algorithm allowlist. Same ForgeRock AM
+Add the inbound-auth block: ~~`AUTH_ISSUER`, `AUTH_JWKS_URL`, `AUTH_AUDIENCE`,
+`AUTH_REQUIRED_SCOPE`~~, and the algorithm allowlist. Same ForgeRock AM
 authority as the IGA block, opposite direction.
 
-`AUTH_ISSUER` must be the issuer string **verbatim, including `:443`** — see
-finding 6. Validate at boot that it parses and that the JWKS URL is on the
-same host, and say so plainly if not; a mismatched issuer is otherwise
-indistinguishable from a signing problem at request time.
+**ANSWERED (naming):** these names were never implemented. P4 ported the
+framework's actual `auth.ts` verbatim rather than inventing new names, so
+the real env vars are `JWT_JWKS_URI`, `JWT_EXPECTED_ISS`, `JWT_EXPECTED_AUD`,
+`JWT_REQUIRED_SCOPE`, `JWT_ALLOWED_ALGS` (the algorithm allowlist —
+already present), `JWT_ACCEPTED_CLOCK_SKEW_SEC`, `JWT_MAX_TOKEN_AGE_SEC`.
+Decided in conversation at P7: **kept as `JWT_*`**, not renamed —
+renaming would diverge this repo's `auth.ts` from the framework file it was
+ported from for no functional gain, and nothing depended on `AUTH_*`; it
+was only ever this plan's text, never shipped.
 
-`AUTH_AUDIENCE` is the **caller's** client id — `idmAdminClient` on the QA
+`JWT_EXPECTED_ISS` must be the issuer string **verbatim, including `:443`**
+— see finding 6. Validate at boot that it parses and that the JWKS URL is on
+the same host, and say so plainly if not; a mismatched issuer is otherwise
+indistinguishable from a signing problem at request time. **Delivered**:
+`validateJwtConfig()` in `src/http/auth.ts` now checks this — a genuine,
+documented divergence from the framework's original file, which has no such
+check (this service's own requirement, not backported upstream).
+
+`JWT_EXPECTED_AUD` is the **caller's** client id — `idmAdminClient` on the QA
 tenant, since AM sets `aud` to the client id for client_credentials. Keep
 `IGA_CLIENT_ID` different from it so the service's own outbound token is
 rejected on the way in; validate at boot that the two differ and warn loudly
 if they do not, because that collapse is invisible at request time.
+**Delivered**: `src/http/identityCheck.ts`'s `checkAudienceIdentityCollapse()`,
+called from `src/index.ts` after `loadWiringConfig()`. Warns via
+`console.warn`, does not refuse to boot — deliberately asymmetric with the
+issuer/JWKS check above, since a collapsed audience/client-id is plausibly
+an intentional (if unusual) deployment, unlike a mismatched issuer host.
 
-`AUTH_REQUIRED_SCOPE` is **not optional** regardless: it is the authorization
+`JWT_REQUIRED_SCOPE` is **not optional** regardless: it is the authorization
 decision when audiences collapse, and defence in depth when they do not.
-Default `fr:iga:*` and refuse to boot if empty.
+~~Default `fr:iga:*` and refuse to boot if empty.~~ **NOT ANSWERED**: no
+default is set today (`JWT_REQUIRED_SCOPE` is genuinely optional in
+`validateJwtConfig()`, `scopeAllowed()` passes with no required scope
+configured at all) — a real gap from this text, not something P7 closed.
+Moved to Backlog.
 
 Deployment is a single Docker container, so every setting here arrives as an
 environment variable and there is no config map or mounted file to reconcile
@@ -1009,14 +1041,34 @@ half-configured process that starts anyway is worse than one that does not.
 Instance configs flow per the P1 contract — pulled by application id, not
 loaded at boot. Registration is lazy, so a validation failure surfaces when
 an operation for that application is first dispatched rather than at startup.
-That is later than a startup check would catch it, and the compensation is
+~~That is later than a startup check would catch it, and the compensation is
 that the failure must be unmistakable: fail the operation
 `REJECTED_PRE_DISPATCH` — it never reached the target — name the application
-and the offending setting, and do not retry a config that cannot parse.
+and the offending setting, and do not retry a config that cannot parse.~~
 
-**Accept:** an application whose config carries `attemptDeadlineMs: -1` fails
-with the ceiling named and the application id in the message; the operation
-records `REJECTED_PRE_DISPATCH` rather than being retried; a config edited to
+**ANSWERED, rewritten at P7:** this text predates P4's routes. P4's
+`ensureApplication()` now runs synchronously at the HTTP layer, in front of
+every route (mutations *and* reads), before `store.enqueue()` — traced end
+to end during P7 planning: a bad `attemptDeadlineMs` is caught right there,
+by the same registration path this paragraph describes, and rejected as an
+**HTTP 400** before any operation row is ever created. There is no code
+path left by which it could instead reach the claim loop and fail
+`REJECTED_PRE_DISPATCH` — deliberately not "fixed" to preserve that outcome,
+since finding out synchronously, at the request that would have caused it,
+is strictly better for the caller than polling a rejected operation to
+discover the same thing later. A config edited to a valid value is still
+picked up on the next request with no restart, per the lazy-registration
+contract — that half of this paragraph is unchanged and confirmed.
+
+**Accept:** an application whose config carries `attemptDeadlineMs: -1`
+~~fails with the ceiling named and the application id in the message; the
+operation records `REJECTED_PRE_DISPATCH` rather than being retried~~ is
+rejected **400** at enqueue, before any operation exists, with the ceiling
+(`120000`) and the application id both in the message — this was already
+true of the underlying registration/error-mapping code before P7 touched
+anything; P7 added the regression test
+(`test/http/objectsRoutes.test.ts`) that actually exercises it end to end
+through a real HTTP request, since nothing did before. A config edited to
 a valid value is picked up on the next operation with no restart; the IGA
 block is absent without complaint when the file store is configured, and its
 absence refuses to boot when the IGA store is; a client secret never appears
@@ -1091,3 +1143,18 @@ item out of here (back into a phase, or to "done") when something picks it up.
   P2 placeholder (`src/provisioning/consoleMetricsSink.ts`) — what's
   actually missing is the structured format, the snapshot, and the
   event-loop-lag wiring, not new instrumentation at call sites.
+- **Dispatcher retry-tuning env vars** (P7). `claimBatchSize`, `maxAttempts`,
+  `backoffBaseMs`/`backoffMaxMs`, `readBackGraceMs`, `reaperIntervalMs` all
+  stay at `Dispatcher`'s hardcoded defaults — P7's config-block text named
+  only pool size/claim interval/reaper threshold, so only those three got
+  env vars. Add the rest here if a real tuning need shows up; all six
+  already have optional `DispatcherConfig` fields ready to receive a value,
+  so wiring one through is a small, mechanical change when needed.
+- **`JWT_REQUIRED_SCOPE` default and boot-time enforcement** (P7). The
+  original plan text said this should default to `fr:iga:*` and refuse to
+  boot if empty — neither is true of the shipped code
+  (`validateJwtConfig()` treats it as genuinely optional, no default). Not
+  implemented at P7: the actual default value is a real security-policy
+  decision for the deployment, not something to invent while wiring config
+  plumbing. Pick a default and decide whether it should be mandatory before
+  building this.

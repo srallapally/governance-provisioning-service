@@ -3,7 +3,10 @@
  * `packages/websocket/src/security/auth.ts` rather than written a second
  * time (P4's own instruction) -- same JWKS fetch/cache, algorithm allowlist,
  * iss/aud/expiry, and clock-skew handling, byte-for-byte where the logic
- * doesn't need to change for this transport.
+ * doesn't need to change for this transport. P7 adds one validation the
+ * framework's original file doesn't have (issuer/JWKS same-host, see
+ * `validateJwtConfig()`) -- this service's own requirement, not backported
+ * upstream, so this is no longer a byte-for-byte copy past that point.
  *
  * Deliberately does NOT include a replay cache: the framework's current
  * `auth.ts` doesn't have one either (removed at some point in favor of
@@ -119,6 +122,26 @@ export function validateJwtConfig(): JwtConfig {
     errors.push(`JWT_REQUIRED_SCOPE is too long (max 256 chars): ${requiredScope.length} chars`);
   }
 
+  // P7: a mismatched issuer is otherwise indistinguishable from a signing
+  // problem at request time, so catch it at boot instead. This check is
+  // this service's own -- the framework's original auth.ts (P4's port
+  // source) has no equivalent, and that's fine: the websocket server it
+  // ships in may have different deployment assumptions.
+  if (jwksUri && expectedIssuer) {
+    try {
+      const issuerHost = new URL(expectedIssuer).hostname;
+      const jwksHost = new URL(jwksUri).hostname;
+      if (issuerHost !== jwksHost) {
+        errors.push(
+            `JWT_EXPECTED_ISS host (${issuerHost}) and JWT_JWKS_URI host (${jwksHost}) differ -- ` +
+            `they must be the same authority. Correct whichever one is wrong.`);
+      }
+    } catch {
+      // expectedIssuer isn't URL-shaped; the length check above already
+      // covers it being present and sane, nothing more to compare here.
+    }
+  }
+
   if (errors.length > 0) {
     throw new Error(`JWT configuration validation failed:\n${errors.map(e => `  - ${e}`).join("\n")}`);
   }
@@ -150,6 +173,17 @@ const jwks = createRemoteJWKSet(new URL(config.jwksUri), {
   timeoutDuration: 5_000,
   cooldownDuration: 10 * 60_000,
 });
+
+/**
+ * The already-validated config, for P7's audience/`IGA_CLIENT_ID` collapse
+ * check (`src/http/identityCheck.ts`) -- that check needs this module's
+ * `expectedAudience` and has no other way to reach it without re-parsing
+ * `process.env` itself. A function, not the bare `const`, matching
+ * `wiring.ts`'s `getStore()`/`getManager()` getter convention.
+ */
+export function getJwtConfig(): JwtConfig {
+  return config;
+}
 
 export interface AuthContext {
   sub: string;

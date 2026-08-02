@@ -12,7 +12,13 @@ import express from "express";
 import request from "supertest";
 import { generateKeyPair, exportJWK, SignJWT, type KeyLike } from "jose";
 
-const ISS = "https://issuer.test:443";
+// Hostname must match the local JWKS server's (127.0.0.1) -- P7's
+// issuer/JWKS same-host boot check would otherwise refuse this fixture at
+// import time. The :443 suffix is kept (on an otherwise-unreachable port,
+// which is fine: JWT_EXPECTED_ISS is only ever string-compared against a
+// token's `iss` claim, never dialed) since that's what the ":443 omitted"
+// test below actually needs to be meaningful.
+const ISS = "https://127.0.0.1:443";
 const AUD = "provisioning-service";
 
 const { publicKey, privateKey } = await generateKeyPair("RS256");
@@ -95,7 +101,7 @@ describe("requireJwt", () => {
   });
 
   it("401s a token whose iss omits :443 rather than passing", async () => {
-    const token = await sign({ iss: "https://issuer.test" });
+    const token = await sign({ iss: "https://127.0.0.1" });
     await request(appWith()).get("/protected").set(bearer(token)).expect(401);
   });
 

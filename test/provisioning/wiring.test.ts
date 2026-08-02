@@ -63,6 +63,9 @@ function baseConfig(overrides: Partial<WiringConfig> = {}): WiringConfig {
         statementTimeoutMs: 5_000,
         partitionRetentionDays: 1,
         partitionMaintenanceIntervalMs: 3_600_000,
+        dispatcherPoolMax: 5,
+        claimIntervalMs: 25,
+        reaperThresholdMs: 10 * 60_000,
         logger: { warn: () => { /* quiet in tests */ }, error: () => { /* quiet in tests */ } },
         ...overrides,
     };
@@ -181,6 +184,33 @@ describeWithPg(probe, "wiring", () => {
         await stop();
         // Nothing was in flight, so stop() has no drain budget to spend.
         expect(Date.now() - startedAt).toBeLessThan(300);
+    });
+
+    it("threads DISPATCHER_CLAIM_INTERVAL_MS through: a large interval leaves a fresh op unclaimed early", async () => {
+        const { dir, cleanup } = await makeAppConfigDir();
+        cleanupFns.push(cleanup);
+        await writeAppConfig(dir, "app-1");
+
+        // Comfortably longer than the assertion's own wait below, and
+        // comfortably shorter than the test timeout -- proves the value
+        // wiring.ts passed to `new Dispatcher(...)` is actually in effect,
+        // not just parsed by loadWiringConfig() (already covered separately).
+        await start(baseConfig({ appConfigDir: dir, claimIntervalMs: 2_000 }));
+        await ensureApplication("app-1");
+
+        const store = new OperationStore(verifyPool);
+        const { id } = await store.enqueue({
+            instanceId: "app-1",
+            objectClass: "__ACCOUNT__",
+            opType: "CREATE",
+            laneKey: laneKeyFor("CREATE", "__ACCOUNT__", { nameAttrValue: "slow-claim" }),
+            idempotencyKey: "wiring-e2e-claim-interval",
+            nameAttrValue: "slow-claim",
+            attrs: { __NAME__: "slow-claim" },
+        });
+
+        await new Promise((r) => setTimeout(r, 300));
+        expect((await store.getStatus(id))?.status).toBe("PENDING");
     });
 
     it("stop() bounds the wait and leaves an in-flight op resumable rather than orphaned", async () => {
@@ -338,5 +368,20 @@ describe("loadWiringConfig", () => {
         expect(cfg.drainBudgetMs).toBe(8_000);
         expect(cfg.shutdownGraceMs).toBe(2_000);
         expect(cfg.statementTimeoutMs).toBe(5_000);
+        expect(cfg.dispatcherPoolMax).toBe(5);
+        expect(cfg.claimIntervalMs).toBe(25);
+        expect(cfg.reaperThresholdMs).toBe(10 * 60_000);
+    });
+
+    it("threads P7's DISPATCHER_* overrides through", () => {
+        const cfg = loadWiringConfig(env({
+            DATABASE_URL: "postgres://x", CONNECTOR_BUNDLE_DIR: "/x", APP_CONFIG_DIR: "/y",
+            DISPATCHER_POOL_MAX: "20",
+            DISPATCHER_CLAIM_INTERVAL_MS: "500",
+            DISPATCHER_REAPER_THRESHOLD_MS: "120000",
+        }));
+        expect(cfg.dispatcherPoolMax).toBe(20);
+        expect(cfg.claimIntervalMs).toBe(500);
+        expect(cfg.reaperThresholdMs).toBe(120_000);
     });
 });

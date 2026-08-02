@@ -49,10 +49,14 @@ describeWithPg(probe, "objects routes", () => {
     cleanupFns = [];
   });
 
-  async function setup(applicationId = "app-1", connectorConfig: Record<string, unknown> = {}) {
+  async function setup(
+      applicationId = "app-1",
+      connectorConfig: Record<string, unknown> = {},
+      runtime?: Record<string, unknown>,
+  ) {
     const { dir, cleanup } = await makeAppConfigDir();
     cleanupFns.push(cleanup);
-    await writeAppConfig(dir, applicationId, connectorConfig);
+    await writeAppConfig(dir, applicationId, connectorConfig, runtime);
     const app: Express = await startTestApp(baseConfig(probe, { appConfigDir: dir }));
     // The same OperationStore instance the routes themselves use (not a
     // second one wrapping verifyPool) -- needed so the admission-cap test
@@ -86,6 +90,20 @@ describeWithPg(probe, "objects routes", () => {
 
     expect(res.body.error).toBe("validation_failed");
     expect(res.body.message).toMatch(/__NAME__/);
+  });
+
+  it("400s a create against an application whose config carries an invalid attemptDeadlineMs, " +
+      "naming the ceiling and the application id (P7's accept criterion)", async () => {
+    const { app } = await setup("app-bad-deadline", {}, { attemptDeadlineMs: -1 });
+
+    const res = await request(app)
+        .post("/instances/app-bad-deadline/objects/__ACCOUNT__")
+        .send({ attributes: { __NAME__: "whoever" } })
+        .expect(400);
+
+    expect(res.body.error).toBe("invalid_application");
+    expect(res.body.message).toMatch(/app-bad-deadline/);
+    expect(res.body.message).toMatch(/120000/);
   });
 
   it("400s a body with no attributes at all", async () => {
