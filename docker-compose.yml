@@ -1,0 +1,91 @@
+# Local developer stack: Postgres, a one-shot schema migration, a throwaway
+# JWT issuer (scripts/dev-auth.ts -- local dev only, never production), and
+# the service itself, wired to the fixture connector already used by the
+# test suite and soak scripts (test/fixtures/connectors) so there's
+# something real to exercise without needing an actual target system.
+#
+#   docker compose up --build
+#   docker compose logs jwks   # copy the printed bearer token
+#   curl -X POST http://localhost:3000/instances/demo-instance/objects/__ACCOUNT__ \
+#     -H "Authorization: Bearer <token>" -H 'content-type: application/json' \
+#     -d '{"attributes":{"__NAME__":"alice"},"priority":"interactive"}'
+#
+# Not a template for a real deployment: production sizing, secrets handling,
+# HA, and DR are DEPLOYMENT_PLAN.md's job. This exists to get a developer
+# from a clean checkout to a working stack in one command.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: provisioning
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # One-shot: applies sql/schema.sql via the same script real operators use
+  # (scripts/db-setup.sh), not a reimplementation of it. Mounted at matching
+  # relative paths (script under /scripts, sql/ at /sql) since the script
+  # locates sql/ relative to its own path.
+  migrate:
+    image: postgres:16
+    depends_on:
+      postgres: { condition: service_healthy }
+    volumes:
+      - ./scripts/db-setup.sh:/scripts/db-setup.sh:ro
+      - ./sql:/sql:ro
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/provisioning
+    entrypoint: ["bash", "/scripts/db-setup.sh"]
+
+  # Local-dev-only JWT issuer, see scripts/dev-auth.ts. Reuses the `deps`
+  # build stage (already has jose + tsx from the full `npm ci`) rather than
+  # needing a Dockerfile of its own.
+  jwks:
+    build:
+      context: .
+      target: deps
+    working_dir: /app
+    volumes:
+      - ./scripts/dev-auth.ts:/app/scripts/dev-auth.ts:ro
+    command: ["npx", "tsx", "scripts/dev-auth.ts"]
+    ports: ["4180:4180"]
+    environment:
+      PORT: "4180"
+      DEV_JWT_ISS: "http://jwks:4180"
+      DEV_JWT_AUD: "provisioning-service-dev"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4180/jwks.json').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build:
+      context: .
+      target: runtime
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      jwks: { condition: service_healthy }
+    ports: ["3000:3000"]
+    environment:
+      DATABASE_URL: "postgres://postgres:postgres@postgres:5432/provisioning?sslmode=disable"
+      APP_CONFIG_STORE: "file"
+      APP_CONFIG_DIR: "/app/app-configs"
+      JWT_JWKS_URI: "http://jwks:4180/jwks.json"
+      JWT_EXPECTED_ISS: "http://jwks:4180"
+      JWT_EXPECTED_AUD: "provisioning-service-dev"
+      PORT: "3000"
+    volumes:
+      - ./test/fixtures/connectors:/app/connector-bundles:ro
+      - ./docker/dev-app-configs:/app/app-configs:ro
+
+volumes:
+  pgdata:

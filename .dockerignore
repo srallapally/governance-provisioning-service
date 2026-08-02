@@ -1,0 +1,13 @@
+node_modules
+dist
+build
+*.tsbuildinfo
+*.log
+*.tmp
+.env
+.env.*
+.pgdata
+.git
+.github
+test
+docker/dev-app-configs
