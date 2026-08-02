@@ -113,6 +113,7 @@ see `src/http/healthRoutes.ts`.
 ### Docker
 
 ```bash
+bash scripts/preflight.sh   # checks Docker/Compose/ports before anything else does
 docker compose up --build
 docker compose logs jwks   # copy the printed bearer token
 curl -X POST http://localhost:3000/instances/demo-instance/objects/__ACCOUNT__ \
@@ -127,6 +128,14 @@ Brings up Postgres, applies the schema (`migrate`, one-shot, via the same
 service itself, wired to the fixture connector the test suite and soak
 scripts already use (`test/fixtures/connectors`) so there's something real
 to exercise from a clean checkout in one command.
+
+`scripts/preflight.sh` checks what `docker compose up` needs before it
+needs it: Docker installed and its daemon reachable, the Compose v2 plugin
+(not the legacy standalone binary -- `docker-compose.yml`'s `migrate`/`app`
+`depends_on` conditions need it), `docker-compose.yml` actually parsing
+under whatever Compose version is installed, and the three ports it
+publishes (3000, 5432, 4180) not already taken. Reports every problem it
+finds in one run, not just the first.
 
 `Dockerfile`'s `runtime` target (the default) is what a real deployment
 ships: non-root, dev-dependency-free, connector bundles baked in at build
@@ -143,6 +152,10 @@ standalone runbook for producing the actual image a deployment ships.
 GKE-specific automation (a CI build-and-push stage) is still unbuilt — see
 `DEPLOYMENT_PLAN.md`'s "CI/CD (sketch, not built)" — so today this is a
 manual sequence, not yet a pipeline step.
+
+```bash
+bash scripts/preflight.sh --publish   # also checks git and gcloud
+```
 
 1. **Supply real connector bundles.** `docker/connector-bundles/` is
    intentionally empty (this repo doesn't own any real bundle) and the

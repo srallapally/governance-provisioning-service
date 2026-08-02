@@ -260,8 +260,8 @@ the existing `build-test` job:
 
 ## What ships now vs. later
 
-**Done:** `Dockerfile`, `docker-compose.yml`, `/healthz`/`/readyz`. This
-document.
+**Done:** `Dockerfile`, `docker-compose.yml`, `scripts/preflight.sh`,
+`/healthz`/`/readyz`. This document.
 
 **Explicitly not done, and not part of this plan's PR:** any k8s manifest
 (Deployment, Service, ConfigMap, HPA, PDB), the Cloud SQL Auth Proxy
