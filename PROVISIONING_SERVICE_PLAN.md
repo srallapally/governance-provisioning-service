@@ -1088,6 +1088,45 @@ sidecar decision (open since CP-1) waits on.
 CP-7 in the framework log covering integration results (CP-5 was the
 extraction).
 
+**Delivered (code), Accept still open (real numbers).** New
+`test/load/soakHttp.ts` (`npm run soak:http`) closes all four gaps found by
+reading the existing `test/load/soak.ts` line by line before writing
+anything: it drives load through the real loader (`loadExternalConnectors`)
+and real HTTP routes (`createApp()`, a real listening server, real
+bearer-JWT auth via a local JWKS server + a real signed token -- same
+pattern as `test/http/auth.test.ts`); it computes the actual P1.5 property
+(did an interactive attempt start while a batch attempt on the same
+instance was still in flight, once batch concurrency reached its cap) from
+recorded attempt intervals, not the ordering-satisfiable
+`interactive p50 < batch p50` comparison `soak.ts` still uses (left
+untouched -- still the right tool for fast local iteration, its historical
+baseline comments are a record, not scaffolding); it counts INDETERMINATE
+outcomes explicitly; and it wires `startEventLoopLagMonitor` (minimally,
+soak-local only -- not the rest of P6, per the Backlog entry). Every
+instance in this scenario runs with artificial per-attempt connector
+latency, deliberately, since the BUG_LOG.md-documented blind spot
+(instant connectors rarely leave a batch attempt genuinely in flight)
+would otherwise make the concurrent-start count meaningless.
+
+`test/fixtures/connectors/fake/index.mjs` gained the attempt-timing/lane-violation
+instrumentation this needed (gated behind `connectorConfig.soakInstrumented`,
+so every existing test's behavior is unchanged) plus a hand-written
+`index.d.mts` so the TypeScript soak script can import its exports typed.
+
+**Verified against local Postgres in this sandbox** (`scripts/test-pg.sh`),
+2 repeated runs, both clean: 0 lane violations, 0 INDETERMINATE, 49
+interactive attempts empirically observed starting while a batch attempt
+was in flight (batch concurrency reached 8/10), event-loop lag mean ~10ms /
+p99 ~12-19ms. `SUCCEEDED`/`FAILED_CONFIRMED` split roughly 50/50 by design
+(deliberate name collisions, same as `soak.ts`, to keep lane serialization
+under real pressure) -- not a failure signal, the report says so explicitly.
+
+**Not done, and not part of this change**: the actual `dev Cloud SQL` run
+(this sandbox has no path to real Cloud SQL, confirmed at P3 -- same
+constraint), recording those numbers here, and writing CP-7 in the
+framework's checkpoint log. All three happen once the real run returns
+results.
+
 ## After P8
 
 Framework PR `feature/async-provisioning` → `main`; publish
