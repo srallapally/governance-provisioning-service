@@ -34,9 +34,9 @@ loop needs lives here.
   the lock lives in Postgres, not in any one process's memory.
 - **A terminal outcome taxonomy that tells the caller what to do next**, not
   just pass/fail — see the outcome table in Design, below.
-- **Connector-agnostic.** Executes through any OpenICF-compatible connector
-  bundle the framework loads at runtime (`CONNECTOR_BUNDLE_DIR`) — this
-  service never talks to a target system directly.
+- **Connector-agnostic.** Executes through any governance connector bundle
+  the framework loads at runtime (`CONNECTOR_BUNDLE_DIR`) — this service
+  never talks to a target system directly.
 - **Lazy application registration.** An application/instance becomes known
   the first time an operation names it; nothing needs registering at boot.
 - **Bearer-JWT authenticated**, with two boot-time cross-validation checks
@@ -73,7 +73,7 @@ Dispatcher claim loop     src/ops/Dispatcher.ts      priority scheduling, lane
 ConnectorManager / facade                     @governance-connector-framework/core
   │
   ▼
-target system, via an OpenICF-compatible connector bundle
+target system, via a governance connector bundle
   │
   ▼
 finalize() → Postgres: terminal outcome (SUCCEEDED / REJECTED_PRE_DISPATCH /
