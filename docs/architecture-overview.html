@@ -1,0 +1,304 @@
+<!-- /mnt/user-data/outputs/architecture-overview.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>governance-provisioning-service — Architecture Overview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --ink:#12141A; --paper:#EFF1F4; --panel:#FFFFFF; --line:#D8DBE1; --muted:#5C6470;
+      --accent:#2451E0; --accent-soft:#E7ECFD;
+      --ok:#157F4B; --ok-soft:#E4F5EC;
+      --warn:#B5750D; --warn-soft:#FBF0DD;
+      --bad:#B23A2E; --bad-soft:#FBE7E4;
+      --ind:#6A4FC2; --ind-soft:#EEE9FA;
+      --fw:#8B5E00; --fw-soft:#FBEFD8;
+      --radius:8px;
+    }
+    *{box-sizing:border-box;}
+    body{ margin:0; background:var(--paper); color:var(--ink); font-family:'IBM Plex Sans',sans-serif; font-size:16px; line-height:1.65; -webkit-font-smoothing:antialiased; }
+    code, .mono{ font-family:'IBM Plex Mono',monospace; }
+
+    .wrap{ max-width:980px; margin:0 auto; padding:52px 40px 120px; }
+    .eyebrow{ font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.06em; color:var(--accent); text-transform:uppercase; }
+    h1{ font-size:38px; line-height:1.12; margin:8px 0 10px; letter-spacing:-0.015em; }
+    .subtitle{ color:var(--muted); font-size:17px; max-width:680px; margin-bottom:8px;}
+
+    .legend{ display:flex; gap:18px; flex-wrap:wrap; margin:28px 0 44px; padding:14px 18px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); font-size:13px; }
+    .legend .item{ display:flex; align-items:center; gap:7px; }
+    .swatch{ width:12px; height:12px; border-radius:3px; display:inline-block; }
+
+    section{ margin-top:60px; padding-top:44px; border-top:1px solid var(--line); }
+    section:first-of-type{ border-top:none; margin-top:0; padding-top:0; }
+    h2{ font-size:24px; margin:0 0 6px; letter-spacing:-0.01em; }
+    .desc{ color:var(--muted); font-size:14.5px; max-width:640px; margin-bottom:22px; }
+    p{ margin:0 0 14px; max-width:680px; }
+
+    .diagram{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:26px; margin:20px 0; overflow-x:auto; }
+    .diagram-caption{ font-size:12.5px; color:var(--muted); margin-top:14px; max-width:680px; }
+    svg text{ font-family:'IBM Plex Mono',monospace; }
+
+    .keyfacts{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin:22px 0; }
+    .keyfacts .fact{ background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; }
+    .keyfacts .fact .n{ font-family:'IBM Plex Mono',monospace; font-size:22px; color:var(--accent); font-weight:600; }
+    .keyfacts .fact .l{ font-size:12.5px; color:var(--muted); margin-top:4px; }
+    @media (max-width:760px){ .keyfacts{grid-template-columns:1fr 1fr;} }
+
+    footer{ padding:40px 0; color:var(--muted); font-size:12.5px; border-top:1px solid var(--line); margin-top:60px; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Architecture overview</div>
+  <h1>governance-provisioning-service</h1>
+  <p class="subtitle">A single-page architectural reference: system context, component boundaries, and the data model that makes horizontal scale-out and crash recovery possible without external coordination.</p>
+
+  <div class="legend">
+    <div class="item"><span class="swatch" style="background:var(--accent);"></span>This repository</div>
+    <div class="item"><span class="swatch" style="background:var(--fw);"></span>External framework (governance-connector-framework)</div>
+    <div class="item"><span class="swatch" style="background:#8B8F98;"></span>External system / infrastructure</div>
+  </div>
+
+  <!-- SYSTEM CONTEXT -->
+  <section>
+    <h2>1 · System context</h2>
+    <p class="desc">Who talks to this service, and what it talks to.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 900 380" width="100%" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8B8F98"/></marker>
+        </defs>
+        <style>
+          .lbl{font-size:13px;font-weight:600;fill:#12141A;}
+          .sub{font-size:10.5px;fill:#5C6470;}
+          .e{stroke:#8B8F98;stroke-width:1.4;fill:none;marker-end:url(#a1);}
+          .elabel{font-size:10.5px;fill:#5C6470;}
+        </style>
+
+        <rect x="40" y="150" width="170" height="70" rx="8" fill="#FFFFFF" stroke="#D8DBE1"/>
+        <text x="60" y="180" class="lbl">Caller</text>
+        <text x="60" y="198" class="sub">IGA / orchestrator</text>
+        <text x="60" y="212" class="sub">holds a bearer JWT</text>
+
+        <rect x="340" y="60" width="260" height="260" rx="10" fill="#E7ECFD" stroke="#2451E0" stroke-width="1.6"/>
+        <text x="360" y="88" class="lbl" style="font-size:15px;">governance-provisioning-service</text>
+        <text x="360" y="106" class="sub">this repository</text>
+
+        <rect x="365" y="130" width="210" height="46" rx="6" fill="#FFFFFF" stroke="#2451E0"/>
+        <text x="380" y="158" class="lbl" style="font-size:12px;">HTTP surface + dispatcher</text>
+
+        <rect x="365" y="196" width="210" height="46" rx="6" fill="#FFFFFF" stroke="#2451E0"/>
+        <text x="380" y="224" class="lbl" style="font-size:12px;">Application registrar</text>
+
+        <rect x="365" y="262" width="210" height="46" rx="6" fill="#FFFFFF" stroke="#2451E0"/>
+        <text x="380" y="290" class="lbl" style="font-size:12px;">Partition maintainer</text>
+
+        <rect x="680" y="30" width="180" height="70" rx="8" fill="#FBEFD8" stroke="#8B5E00"/>
+        <text x="700" y="60" class="lbl">connector framework</text>
+        <text x="700" y="78" class="sub">execution, deadlines,</text>
+        <text x="700" y="90" class="sub">breakers (external dep.)</text>
+
+        <rect x="680" y="150" width="180" height="70" rx="8" fill="#FFFFFF" stroke="#8B8F98"/>
+        <text x="700" y="180" class="lbl">Target systems</text>
+        <text x="700" y="198" class="sub">HR / AD / SaaS / etc.</text>
+        <text x="700" y="212" class="sub">(N connector instances)</text>
+
+        <rect x="680" y="270" width="180" height="70" rx="8" fill="#FFFFFF" stroke="#8B8F98"/>
+        <text x="700" y="300" class="lbl">Postgres</text>
+        <text x="700" y="318" class="sub">operation table,</text>
+        <text x="700" y="332" class="sub">day-partitioned</text>
+
+        <rect x="40" y="280" width="170" height="60" rx="8" fill="#FFFFFF" stroke="#D8DBE1"/>
+        <text x="60" y="308" class="lbl">Application configs</text>
+        <text x="60" y="324" class="sub">JSON files / IGA repo</text>
+
+        <path d="M210,185 H340" class="e"/><text x="222" y="176" class="elabel">HTTPS + bearer JWT</text>
+        <path d="M210,310 H365" class="e"/><text x="215" y="255" class="elabel">read by registrar</text>
+        <path d="M575,153 H680" class="e"/><text x="580" y="144" class="elabel">calls</text>
+        <path d="M760,100 V150" class="e"/><text x="768" y="130" class="elabel">executes</text>
+        <path d="M575,219 H680 V220" class="e" style="stroke-dasharray:3,3;"/>
+        <path d="M575,285 H680" class="e"/><text x="590" y="278" class="elabel">claim / write</text>
+      </svg>
+      <p class="diagram-caption">The service never talks to a target system directly — every attempt is delegated through the connector framework's leased facade, which owns retries at the transport level, breakers, and pooling.</p>
+    </div>
+  </section>
+
+  <!-- COMPONENT ARCHITECTURE -->
+  <section>
+    <h2>2 · Component architecture</h2>
+    <p class="desc">Inside the trust boundary: what each module owns.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 900 460" width="100%" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#8B8F98"/></marker></defs>
+        <style>
+          .box{fill:#FFFFFF;stroke:#D8DBE1;stroke-width:1.2;}
+          .boxA{fill:#E7ECFD;stroke:#2451E0;stroke-width:1.4;}
+          .boxF{fill:#FBEFD8;stroke:#8B5E00;stroke-width:1.2;}
+          .lbl{font-size:12px;font-weight:600;fill:#12141A;}
+          .sub{font-size:9.5px;fill:#5C6470;}
+          .e{stroke:#8B8F98;stroke-width:1.2;fill:none;marker-end:url(#a3);}
+        </style>
+
+        <rect x="20" y="20" width="860" height="420" rx="10" fill="none" stroke="#D8DBE1" stroke-dasharray="4,3"/>
+        <text x="36" y="42" class="sub" style="font-size:10px;">one process (dispatcher + HTTP), N replicas, no coordination between them</text>
+
+        <rect x="40" y="60" width="200" height="56" rx="6" class="box"/>
+        <text x="55" y="83" class="lbl">index.ts</text>
+        <text x="55" y="99" class="sub">entrypoint, SIGTERM/SIGINT</text>
+
+        <rect x="40" y="140" width="200" height="56" rx="6" class="box"/>
+        <text x="55" y="163" class="lbl">wiring.ts</text>
+        <text x="55" y="179" class="sub">assembles the data path</text>
+
+        <rect x="280" y="60" width="220" height="56" rx="6" class="box"/>
+        <text x="295" y="83" class="lbl">auth.ts</text>
+        <text x="295" y="99" class="sub">bearer JWT, JWKS, scopes</text>
+
+        <rect x="280" y="140" width="220" height="56" rx="6" class="box"/>
+        <text x="295" y="163" class="lbl">objectsRoutes / operationsRoutes</text>
+        <text x="295" y="179" class="sub">HTTP surface</text>
+
+        <rect x="280" y="220" width="220" height="56" rx="6" class="box"/>
+        <text x="295" y="243" class="lbl">admission.ts</text>
+        <text x="295" y="259" class="sub">backlog cap, lane key</text>
+
+        <rect x="40" y="220" width="200" height="56" rx="6" class="box"/>
+        <text x="55" y="243" class="lbl">registerApplication.ts</text>
+        <text x="55" y="259" class="sub">lazy instance registration</text>
+
+        <rect x="40" y="300" width="200" height="56" rx="6" class="box"/>
+        <text x="55" y="323" class="lbl">FileApplicationConfigStore</text>
+        <text x="55" y="339" class="sub">JSON per application</text>
+
+        <rect x="560" y="140" width="230" height="70" rx="6" class="boxA"/>
+        <text x="575" y="168" class="lbl" style="font-size:13px;">Dispatcher</text>
+        <text x="575" y="186" class="sub">claim loop · 25ms · reaper</text>
+
+        <rect x="560" y="240" width="230" height="70" rx="6" class="boxA"/>
+        <text x="575" y="268" class="lbl" style="font-size:13px;">OperationStore</text>
+        <text x="575" y="286" class="sub">durable state, CLAIM_SQL</text>
+
+        <rect x="560" y="340" width="230" height="60" rx="6" class="box"/>
+        <text x="575" y="365" class="lbl">PartitionMaintainer</text>
+        <text x="575" y="381" class="sub">hourly, day partitions</text>
+
+        <rect x="280" y="320" width="220" height="60" rx="6" class="boxF"/>
+        <text x="295" y="345" class="lbl">ConnectorRegistry / Manager</text>
+        <text x="295" y="361" class="sub">framework — leases, breakers</text>
+
+        <path d="M140,116 V140" class="e"/>
+        <path d="M240,168 H280" class="e"/>
+        <path d="M390,116 V140" class="e"/>
+        <path d="M390,196 V220" class="e"/>
+        <path d="M240,248 H280" class="e"/>
+        <path d="M140,196 V220" class="e"/>
+        <path d="M140,276 V300" class="e"/>
+        <path d="M500,175 H560" class="e"/>
+        <path d="M675,210 V240" class="e"/>
+        <path d="M675,310 V340" class="e"/>
+        <path d="M500,248 H560 V240" class="e"/>
+        <path d="M500,350 H560 V270" class="e" style="stroke-dasharray:3,3;"/>
+      </svg>
+      <p class="diagram-caption">Blue: the claim-loop core. White: config/HTTP scaffolding around it. Amber: the external framework boundary — this repository calls into it, never the reverse.</p>
+    </div>
+
+    <div class="keyfacts">
+      <div class="fact"><div class="n">4,193</div><div class="l">lines of TypeScript in src/</div></div>
+      <div class="fact"><div class="n">2</div><div class="l">stores: Postgres (production), in-memory (test double), held to one shared contract suite</div></div>
+      <div class="fact"><div class="n">0</div><div class="l">leader election / external locks — coordination is SKIP LOCKED + advisory locks only</div></div>
+    </div>
+  </section>
+
+  <!-- STATE MACHINE -->
+  <section>
+    <h2>3 · Operation lifecycle</h2>
+    <p class="desc">Every enqueued mutation moves through this state machine exactly once.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 900 260" width="100%" xmlns="http://www.w3.org/2000/svg">
+        <defs><marker id="a4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#8B8F98"/></marker></defs>
+        <style>
+          .st{stroke-width:1.4; }
+          .lbl{font-size:12px;font-weight:600;fill:#12141A;text-anchor:middle;}
+          .e{stroke:#8B8F98;stroke-width:1.3;fill:none;marker-end:url(#a4);}
+          .elabel{font-size:9.5px;fill:#5C6470;text-anchor:middle;}
+        </style>
+
+        <rect x="20" y="100" width="140" height="50" rx="8" fill="#E9EAEC" stroke="#9CA0A8" class="st"/><text x="90" y="130" class="lbl">PENDING</text>
+
+        <rect x="240" y="100" width="140" height="50" rx="8" fill="#E7ECFD" stroke="#2451E0" class="st"/><text x="310" y="130" class="lbl">RUNNING</text>
+
+        <rect x="240" y="10" width="150" height="50" rx="8" fill="#EEE9FA" stroke="#6A4FC2" class="st"/><text x="315" y="40" class="lbl" style="font-size:10.5px;">AWAITING_READBACK</text>
+
+        <rect x="620" y="10" width="150" height="42" rx="8" fill="#E4F5EC" stroke="#157F4B" class="st"/><text x="695" y="35" class="lbl">SUCCEEDED</text>
+        <rect x="620" y="66" width="150" height="42" rx="8" fill="#EDEEF0" stroke="#7A7F88" class="st"/><text x="695" y="91" class="lbl" style="font-size:9.5px;">REJECTED_PRE_DISPATCH</text>
+        <rect x="620" y="122" width="150" height="42" rx="8" fill="#FBE7E4" stroke="#B23A2E" class="st"/><text x="695" y="147" class="lbl">FAILED_CONFIRMED</text>
+        <rect x="620" y="178" width="150" height="42" rx="8" fill="#FBF0DD" stroke="#B5750D" class="st"/><text x="695" y="203" class="lbl">INDETERMINATE</text>
+
+        <path d="M160,125 H240" class="e"/><text x="200" y="115" class="elabel">claim</text>
+        <path d="M380,110 C 470,60 550,50 620,32" class="e"/>
+        <path d="M380,140 C 470,140 550,140 620,90" class="e"/>
+        <path d="M380,145 C 470,160 550,155 620,145" class="e"/>
+        <path d="M380,148 C 470,190 550,195 620,199" class="e"/>
+        <path d="M310,100 V60" class="e"/><text x="330" y="82" class="elabel">create timeout</text>
+        <path d="M315,60 C 450,60 500,60 620,20" class="e"/>
+        <path d="M90,100 C 40,60 200,-10 315,10" class="e" style="stroke-dasharray:3,3;"/><text x="150" y="10" class="elabel">reap: dead dispatcher (creates)</text>
+        <path d="M240,140 C 180,190 140,190 90,150" class="e"/><text x="160" y="205" class="elabel">requeue: backoff / reap (non-create)</text>
+      </svg>
+      <p class="diagram-caption">Three non-terminal states, four terminal outcomes. The four-way split at finalize (success / rejected-before-dispatch / confirmed failure / indeterminate) is the load-bearing design decision in this codebase — each implies a different, specific remedy.</p>
+    </div>
+  </section>
+
+  <!-- DATA MODEL -->
+  <section>
+    <h2>4 · Data model — the partitioned operation table</h2>
+    <p class="desc">Why the hot table stays small regardless of throughput.</p>
+
+    <div class="diagram">
+      <svg viewBox="0 0 900 200" width="100%" xmlns="http://www.w3.org/2000/svg">
+        <style>
+          .part{stroke:#D8DBE1;stroke-width:1.2;}
+          .partHot{fill:#E7ECFD;stroke:#2451E0;}
+          .partCold{fill:#F1F2F4;stroke:#B7BBC2;}
+          .lbl{font-size:11px;font-weight:600;fill:#12141A;text-anchor:middle;}
+          .sub{font-size:9.5px;fill:#5C6470;text-anchor:middle;}
+        </style>
+        <text x="30" y="30" class="lbl" style="text-anchor:start;font-size:13px;">operations (range-partitioned by created_at, one partition per day)</text>
+
+        <rect x="30" y="55" width="120" height="70" rx="6" fill="#F1F2F4" stroke="#B7BBC2" class="part"/>
+        <text x="90" y="82" class="lbl" style="font-size:10px;">…older</text>
+        <text x="90" y="98" class="sub">dropped once fully terminal</text>
+
+        <rect x="170" y="55" width="120" height="70" rx="6" class="partHot part"/>
+        <text x="230" y="82" class="lbl">yesterday</text>
+        <text x="230" y="98" class="sub">hot — retained</text>
+
+        <rect x="310" y="55" width="120" height="70" rx="6" class="partHot part"/>
+        <text x="370" y="82" class="lbl">today</text>
+        <text x="370" y="98" class="sub">hot — active writes</text>
+
+        <rect x="450" y="55" width="120" height="70" rx="6" fill="#E4F5EC" stroke="#157F4B" class="part"/>
+        <text x="510" y="82" class="lbl">tomorrow</text>
+        <text x="510" y="98" class="sub">pre-created by maintainer</text>
+
+        <rect x="620" y="55" width="250" height="70" rx="6" fill="#FFFFFF" stroke="#8B8F98" class="part" stroke-dasharray="4,3"/>
+        <text x="745" y="82" class="lbl">operations_history</text>
+        <text x="745" y="98" class="sub">not partitioned, append-only, never dropped</text>
+
+        <text x="30" y="155" class="sub" style="text-anchor:start;">A partition drops only once every row in it is terminal — a single stranded PENDING/RUNNING row keeps the whole day pinned open.</text>
+        <text x="30" y="172" class="sub" style="text-anchor:start;">finalize() writes the terminal status and the history row in one transaction — a record can't reach terminal without its permanent copy existing.</text>
+      </svg>
+      <p class="diagram-caption">Default retention: 24 hours hot. Everything that ever finalized is kept forever in the slim, unpartitioned <code>operations_history</code> table (id, instance, class, type, status, uid, error code, timestamps — no payload).</p>
+    </div>
+  </section>
+
+  <footer>governance-provisioning-service — architecture overview. Pairs with the engineering handover (component detail, per-operation flow, scaling and failure semantics) and the security review (findings and threat model). Deployment topology and infrastructure specifics are intentionally out of scope here.</footer>
+</div>
+</body>
+</html>
