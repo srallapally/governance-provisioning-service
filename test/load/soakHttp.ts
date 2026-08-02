@@ -171,13 +171,30 @@ async function main(): Promise<void> {
 
   // ---- enqueue via real HTTP POST ------------------------------------------
   const samples = new Map<string, Sample>();
-  const nameSpace = Math.max(1, Math.floor(TOTAL_OPS / 8));
+  // Names, and therefore lanes, must be allocated independently per instance
+  // -- not `i % nameSpace` against a single pool shared across every
+  // instance's round-robin stream. Lane exclusion is scoped per
+  // (instanceId, laneKey), so reusing a name across different instances is
+  // harmless, but if nameSpace and INSTANCES share a common factor, `i %
+  // INSTANCES` (instance assignment) and `i % nameSpace` (name assignment)
+  // interact: an instance only ever sees `nameSpace / gcd(nameSpace,
+  // INSTANCES)` distinct names in its own stream, not `nameSpace`. At
+  // OPS=1000 (nameSpace=125, INSTANCES=4, gcd=1) this never surfaced; at
+  // OPS=100 (nameSpace=12, gcd=4) it collapsed each instance to 3 distinct
+  // lanes, capping observable concurrency regardless of the configured
+  // budget -- found via a real run against Cloud SQL, not caught locally.
+  // `indexWithinInstance` increases by exactly 1 for consecutive ops on the
+  // same instance, so cycling it through `perInstanceNameSpace` names is
+  // immune to this regardless of how TOTAL_OPS/INSTANCES relate.
+  const opsPerInstance = Math.ceil(TOTAL_OPS / INSTANCES);
+  const perInstanceNameSpace = Math.max(1, Math.floor(opsPerInstance / 8));
   const enqueueStart = performance.now();
 
   for (let i = 0; i < TOTAL_OPS; i++) {
     const instanceId = instanceIds[i % INSTANCES]!;
     const priority = i % Math.round(1 / INTERACTIVE_SHARE) === 0 ? "interactive" : "batch";
-    const name = `user-${i % nameSpace}`;
+    const indexWithinInstance = Math.floor(i / INSTANCES);
+    const name = `user-${indexWithinInstance % perInstanceNameSpace}`;
 
     const res = await fetch(`${base}/instances/${instanceId}/objects/${OBJECT_CLASS}`, {
       method: "POST",
@@ -227,10 +244,11 @@ async function main(): Promise<void> {
   console.log(`batch       latency p50 ${pct(batch, 50)}ms  p99 ${pct(batch, 99)}ms  n=${batch.length}`);
   console.log(`interactive latency p50 ${pct(interactive, 50)}ms  p99 ${pct(interactive, 99)}ms  n=${interactive.length}`);
   // FAILED_CONFIRMED is expected and not a failure signal here: names are
-  // deliberately reused across a small namespace (nameSpace below) so lanes
-  // genuinely collide, same as soak.ts -- most creates on an already-taken
-  // name correctly fail ALREADY_EXISTS against the real target. Only
-  // INDETERMINATE, checked separately, indicates something actually wrong.
+  // deliberately reused within each instance's own small name space (see
+  // perInstanceNameSpace above) so lanes genuinely collide, same as
+  // soak.ts -- most creates on an already-taken name correctly fail
+  // ALREADY_EXISTS against the real target. Only INDETERMINATE, checked
+  // separately, indicates something actually wrong.
   console.log(`outcomes: ${outcomeSummary} (FAILED_CONFIRMED is expected -- deliberate name collisions)`);
 
   const { concurrentStarts, maxBatchConcurrency } = analyzeAttempts(attemptLog);

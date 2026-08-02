@@ -1121,6 +1121,27 @@ p99 ~12-19ms. `SUCCEEDED`/`FAILED_CONFIRMED` split roughly 50/50 by design
 (deliberate name collisions, same as `soak.ts`, to keep lane serialization
 under real pressure) -- not a failure signal, the report says so explicitly.
 
+**A real bug the first actual Cloud SQL run caught**, not visible in local
+verification: `test/load/soakHttp.ts` assigned names via `i % nameSpace`
+against a pool shared across every instance's round-robin stream
+(`i % INSTANCES`). When `nameSpace` and `INSTANCES` share a common factor
+-- true at a small `OPS`, e.g. `OPS=100` gives `nameSpace=12`,
+`INSTANCES=4`, `gcd=4` -- an instance only ever sees `nameSpace /
+gcd(nameSpace, INSTANCES)` distinct names in its own stream, not
+`nameSpace`. That collapsed to 3 distinct lanes per instance at `OPS=100`,
+capping observable concurrency far below the configured budget regardless
+of whether the reservation was working -- a real run against Cloud SQL
+reported `batch concurrency reached: 1 (budget 10)` and only 76/100
+operations finished inside the 3-minute drain timeout. At the default
+`OPS=1000` (`nameSpace=125`, `gcd(125,4)=1`) this never surfaced, which is
+why local verification didn't catch it. Fixed by allocating names per
+instance-stream-position (`indexWithinInstance % perInstanceNameSpace`,
+immune to the `TOTAL_OPS`/`INSTANCES` relationship by construction) rather
+than globally. Reverified locally both at `OPS=100` (concurrency now
+correctly reaches its real ceiling of 3) and `OPS=1000` (no regression,
+concurrency still reaches 8/10, 12 concurrent starts) -- both clean, 0 lane
+violations, 0 INDETERMINATE.
+
 **Not done, and not part of this change**: the actual `dev Cloud SQL` run
 (this sandbox has no path to real Cloud SQL, confirmed at P3 -- same
 constraint), recording those numbers here, and writing CP-7 in the
