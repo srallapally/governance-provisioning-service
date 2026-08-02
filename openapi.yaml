@@ -11,9 +11,16 @@ info:
     OperationStatus, OperationOutcome, and the bearer scheme) is copied from
     the framework's openapi.yaml, which owned it until CP-5. The paths are new
     -- the framework's file never declared any, by design, because the
-    framework supplies the machinery and not an HTTP surface. They are
-    authored from Phase P4's prose and are provisional until P4 implements
-    them, at which point this file becomes the authority over that prose.
+    framework supplies the machinery and not an HTTP surface. They were
+    authored from Phase P4's prose and are now implemented; this file is the
+    authority over that prose, not the reverse. Two corrections made during
+    implementation: `OperationState.priority` is no longer required (absent
+    once an operation ages out of the hot table into history, which never
+    carries priority -- see that schema's description) and the `filter` query
+    param's grammar is now documented for real (P4's original text pointed at
+    "the framework's filter module," which parses an already-structured
+    filter object, not a query string -- there was never a string grammar to
+    point at).
 
 security:
   - bearerAuth: []
@@ -32,6 +39,8 @@ paths:
         create whose attempt times out is resolved by reading the object back
         by name, and without it the operation can only record INDETERMINATE.
       operationId: enqueueCreate
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -57,7 +66,15 @@ paths:
           in: query
           required: false
           schema: { type: string }
-          description: Filter expression, parsed by the framework's filter module.
+          description: >-
+            A flat chain of comparisons joined by `and` -- no `or`, `not`, or
+            parentheses/nesting. Operator keywords are SCIM's, mapped 1:1 onto
+            the framework's filter AST: `eq`, `co` (contains), `sw`
+            (starts-with), `ew` (ends-with), `gt`, `ge`, `lt`, `le`, `pr`
+            (exists, takes no value). Attribute paths may be dotted
+            (`name.givenName`). Values are a double-quoted string, a bare
+            number, or `true`/`false`. Example:
+            `email eq "a@b.com" and active eq true`.
       responses:
         "200":
           description: A stream of objects, newline-delimited.
@@ -93,6 +110,8 @@ paths:
         freely after an indeterminate attempt. Deltas use the add-values and
         remove-values routes.
       operationId: enqueueUpdate
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -109,6 +128,8 @@ paths:
         A delete whose target answers UNKNOWN_UID resolves SUCCEEDED -- the
         object is absent, which is what was asked for.
       operationId: enqueueDelete
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "202": { $ref: "#/components/responses/Accepted" }
         "400": { $ref: "#/components/responses/ValidationFailed" }
@@ -125,6 +146,8 @@ paths:
         A delta, not a replace. Retried after an indeterminate attempt only
         when the connector declares idempotentDelta.
       operationId: enqueueAddValues
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -143,6 +166,8 @@ paths:
     post:
       summary: Remove values from multi-valued attributes
       operationId: enqueueRemoveValues
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -201,6 +226,17 @@ components:
       in: path
       required: true
       schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string }
+      description: >-
+        The caller's own request id. Echoed back as `idempotencyKey` on the
+        202 response; a repeat under the same key returns the original
+        operationId rather than enqueueing a second row. Generated
+        server-side (a UUID) when omitted -- a header, not a body field,
+        because it is caller-request metadata, not part of the mutation.
 
   responses:
     Accepted:
@@ -284,13 +320,20 @@ components:
 
     OperationState:
       type: object
-      required: [operationId, instanceId, objectClass, type, priority, status]
+      required: [operationId, instanceId, objectClass, type, status]
       properties:
         operationId: { type: string, format: uuid }
         instanceId: { type: string }
         objectClass: { type: string }
         type: { $ref: "#/components/schemas/OperationType" }
-        priority: { $ref: "#/components/schemas/OperationPriority" }
+        priority:
+          allOf: [{ $ref: "#/components/schemas/OperationPriority" }]
+          description: >-
+            Absent once the operation has aged out of the hot operation
+            table into permanent history. That table is deliberately slim
+            (append-only, no scheduling detail) and never carried priority,
+            so this is a genuine absence, not a bug -- present on every hot
+            (non-archived) row.
         status: { $ref: "#/components/schemas/OperationStatus" }
         outcome:
           $ref: "#/components/schemas/OperationOutcome"
@@ -306,7 +349,13 @@ components:
           description: Present on SUCCEEDED.
           properties:
             uid: { type: string }
-            object: { $ref: "#/components/schemas/ConnectorObject" }
+            object:
+              allOf: [{ $ref: "#/components/schemas/ConnectorObject" }]
+              description: >-
+                Present for a hot row's success. History keeps only the Uid
+                (the one fact that must outlive the hot row -- without it a
+                successful create becomes unlinkable to the account it made),
+                not the full object, so this is absent once archived.
         createdAt: { type: string, format: date-time }
         completedAt: { type: string, format: date-time }
 

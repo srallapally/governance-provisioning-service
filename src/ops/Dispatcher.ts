@@ -27,6 +27,7 @@ import type {
   InstanceAvailability,
   OperationStoreApi,
 } from "./OperationStore.js";
+import { resolveNameAttribute } from "./nameAttribute.js";
 import { noopMetrics, type MetricsSink } from "@governance-connector-framework/core";
 // The claim-loop metric names left the framework at CP-5 with this code.
 import { OPS_METRICS as METRICS } from "./metrics.js";
@@ -636,7 +637,7 @@ export class Dispatcher {
       return { outcome: "INDETERMINATE", errorCode: "DEADLINE_NO_NAME" };
     }
 
-    const nameAttribute = await this.nameAttributeFor(lease, op.objectClass);
+    const nameAttribute = await resolveNameAttribute(lease, op.objectClass);
 
     try {
       const found = await this.readBackByName(lease, op.objectClass, nameAttribute, op.nameAttrValue, runtime);
@@ -654,17 +655,6 @@ export class Dispatcher {
       return { outcome: "REQUEUE", errorCode: "READBACK_MISS", delayMs: 0 };
     }
     return { outcome: "INDETERMINATE", errorCode: "READBACK_MISS" };
-  }
-
-  private async nameAttributeFor(lease: Lease, objectClass: string): Promise<string> {
-    try {
-      const schema: any = await lease.facade.schema();
-      const oc = schema?.objectClasses?.find((c: any) => c.name === objectClass);
-      if (oc?.nameAttribute) return String(oc.nameAttribute);
-    } catch {
-      // Schema is advisory here; the ICF default is the safe fallback.
-    }
-    return "__NAME__";
   }
 
   private async readBackByName(

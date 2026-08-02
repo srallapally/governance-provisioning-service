@@ -22,5 +22,18 @@ export default async function factory(ctx) {
     const config = ctx?.config ?? {};
     if (config.behavior === "hang") connector.controls.hangUntilAborted();
     if (typeof config.latencyMs === "number") connector.controls.latency(config.latencyMs);
+    if (config.behavior === "unknownUidOnGet") {
+        // Unconditional override, not controls.failNext(): failNext is
+        // one-shot and would apply to whatever call happens to be first
+        // against a freshly built instance (which may not be the get() a
+        // test is trying to exercise, e.g. a health check at construction).
+        // This exists to prove the route maps get()'s OTHER legitimate
+        // "not found" contract -- a thrown ConnectorError, not a null
+        // return -- to 404 too.
+        connector.get = async () => {
+            const { ConnectorError } = await import("@governance-connector-framework/core");
+            throw new ConnectorError("UNKNOWN_UID", "no such uid (fixture)");
+        };
+    }
     return connector;
 }

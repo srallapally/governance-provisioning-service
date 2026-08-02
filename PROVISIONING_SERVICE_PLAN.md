@@ -751,10 +751,11 @@ text.
 Auth, settled at P0: every route sits behind a bearer token from the same
 OAuth authority the service uses outbound. Port
 `packages/websocket/src/security/auth.ts` — JWKS fetch and cache, algorithm
-allowlist, `iss`/`aud`/expiry checks, clock skew, replay cache — rather than
-writing a second one. Mount it in front of every route including the status
-endpoint: an operationId is a capability, and an unauthenticated reader could
-enumerate provisioning activity across applications.
+allowlist, `iss`/`aud`/expiry checks, clock skew, ~~replay cache~~ (ANSWERED:
+the actual file has no replay cache to port — see Delivered note below) —
+rather than writing a second one. Mount it in front of every route including
+the status endpoint: an operationId is a capability, and an unauthenticated
+reader could enumerate provisioning activity across applications.
 
 The authority is ForgeRock AM and its tokens are JWTs (confirmed from a
 sample at P0), so JWKS validation applies and introspection is not needed.
@@ -781,12 +782,79 @@ Read plane: get/search acquire through `ConnectorManager`, release in
 resume on drain; no buffering.
 
 **Accept:** route tests with `FakeConnector` through the real loader:
-202→SUCCEEDED with Uid; 429 with depth at cap; ADD_VALUES enqueue; 10k-object
-search with bounded memory, asserted by observation not vibes. Auth: no token
-is 401 on every route including status; a token signed by an unknown key is
-401; an expired token is 401; a token whose `iss` omits `:443` is 401 rather
-than passing; and a valid token **without** the required scope is 403, which
-is the test that matters most while `aud` cannot separate callers.
+202→SUCCEEDED with Uid; 429 with depth at cap; ADD_VALUES enqueue;
+~~10k-object search with bounded memory, asserted by observation not
+vibes~~ (ANSWERED, partially: see finding 5 below — the bounded-memory
+property is proven at the unit level instead, not via a literal 10k-row
+integration run). Auth: no token is 401 on every route including status; a
+token signed by an unknown key is 401; an expired token is 401; a token
+whose `iss` omits `:443` is 401 rather than passing; and a valid token
+**without** the required scope is 403, which is the test that matters most
+while `aud` cannot separate callers.
+
+**Delivered.** `src/http/{auth,filter,errors,objectsRoutes,operationsRoutes,
+app,loadHttpConfig}.ts`, `src/ops/nameAttribute.ts` (extracted, shared with
+`Dispatcher`), `src/index.ts` rewritten to mount the HTTP server. 55 new
+tests (`test/http/{auth,filter,objectsRoutes,operationsRoutes}.test.ts`),
+all passing with and without `DATABASE_URL`, plus a manual end-to-end smoke
+test of the real process (real JWKS server, real Postgres, `SIGTERM` →
+clean drain and exit, confirmed via the actual `[index]` log lines this
+time — see the P2 note about a lost-stdout false negative that this smoke
+test's shell handling avoided by signaling the innermost node process, not
+an `npm exec`/`tsx` wrapper PID).
+
+Findings (see `openapi.yaml`'s own info block and schema comments for the
+contract-facing half of these):
+
+1. **No replay cache to port.** The framework's actual `auth.ts` has JWKS
+   fetch/cache, algorithm allowlist, iss/aud/expiry, and clock skew — no
+   `TokenReplayCache`, no JTI handling. Confirmed two ways: reading the file
+   in full, and the framework's own `bearer-semantics.test.ts`, whose
+   comments say a JTI/replay setting is now deliberately *ignored* ("bearer
+   semantics"). An older description elsewhere in the framework repo
+   (`packages/core/CLAUDE.md`) still describes a replay cache — that
+   description, not the code, is almost certainly where this phase's
+   original text came from. Ported the actual file; no replay cache exists
+   in this service either.
+2. **No string filter grammar existed anywhere to reuse.** `core`'s
+   `parseFilter` validates an already-structured `Node` object; there is no
+   tokenizer for a query string. Wrote one (`src/http/filter.ts`),
+   deliberately narrow: a flat `and`-chain of SCIM-keyword comparisons, no
+   `or`/`not`/nesting. `openapi.yaml`'s `filter` param now documents the
+   real grammar instead of pointing at a module that doesn't parse strings.
+3. **`OperationState.priority`/`result.object` can't always be served.**
+   `operations_history` is deliberately slim (its own schema comment: "no
+   attrs and no result blob") — no `priority` column, no result JSON. Once
+   a row ages into history those fields are physically unavailable.
+   Corrected `openapi.yaml` rather than widen a table that was narrowed on
+   purpose: both are now documented as present-only-while-hot. Also added
+   `priority` to `OperationStore.getStatus()`'s hot-row `SELECT`, which
+   didn't select it even for hot rows before this phase.
+4. **`ConnectorManager.acquire()`'s "not registered"/"not supported" errors
+   have no type or code**, only a message string (confirmed by reading the
+   registry/manager source). `src/http/errors.ts` maps them to 404 via a
+   narrow, isolated message-substring check, documented as fragile by
+   construction. Consistent with the P2 precedent (the `shutdown()`
+   refcount gap): **worked around locally, not filed as a framework bug**
+   — moved to Backlog as a candidate for an upstream typed error instead.
+5. **`FakeConnector`'s streaming search loop doesn't await an async
+   `ResultsHandler`.** It checks `handler(obj) === false` without awaiting,
+   so a `Promise<boolean>`-returning handler (what `makeNdjsonHandler`
+   necessarily is, since it awaits `drain`) can never signal early-stop
+   through that path — a real end-to-end backpressure/disconnect test
+   against the fixture connector cannot exercise it. Not a defect worth
+   filing (a test double's loop is not lease-safety-relevant, unlike
+   finding 4's parent), so not filed. Worked around by extracting
+   `makeNdjsonHandler` as a standalone, exported function
+   (`src/http/objectsRoutes.ts`) and unit-testing it directly against a
+   mock sink — proves the actual `write()`-returns-false → await-`drain`
+   → resume logic, and the client-gone/response-already-ended early exits,
+   without needing a real socket or a connector that can drive them.
+
+One implementation note not itself a finding: `Idempotency-Key` (a header,
+caller-request metadata, not a body field) is the concrete answer to "caller
+request id" that this phase's original text left unspecified — added to
+`openapi.yaml`'s five mutation operations as a documented, optional header.
 
 ## Phase P5: partition maintenance in-process
 
@@ -949,3 +1017,16 @@ item out of here (back into a phase, or to "done") when something picks it up.
   not. Verify against whichever pooling mode, if any, sits in front of the
   real production topology once that's known — likely alongside P7
   (configuration) or P8 (integrated soak).
+- **Typed error for `ConnectorManager.acquire()`'s "instance not
+  registered"/"not supported" cases** (P4 finding 4). Today these are plain
+  `Error`s with only a message string; `src/http/errors.ts` maps them to 404
+  via an isolated message-substring check, documented as fragile. An
+  upstream typed error (a code, not just text) would let that check become a
+  real `instanceof`/discriminant match. Framework-side change — would need
+  filing in the framework's `BUG_LOG.md` (or an RFE) if picked up, not
+  patched from this repo.
+- **Filter grammar: `or`/`not`/nesting.** `src/http/filter.ts` (P4) only
+  supports a flat `and`-chain of comparisons, deliberately, to keep the
+  phase scoped. Extend if a caller actually needs a disjunction or a
+  negation — SCIM's grammar (parentheses, `or`, `not`) is the natural
+  reference if/when this is picked up.

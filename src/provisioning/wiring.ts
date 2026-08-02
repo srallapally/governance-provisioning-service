@@ -151,6 +151,7 @@ export function loadWiringConfig(env: NodeJS.ProcessEnv = process.env): WiringCo
 
 interface RunningWiring {
     pool: Pool;
+    store: OperationStore;
     manager: ConnectorManager;
     dispatcher: Dispatcher;
     registrar: ApplicationRegistrar;
@@ -182,6 +183,25 @@ export function isRunning(): boolean {
 export async function ensureApplication(applicationId: string): Promise<void> {
     if (!running) throw new Error("wiring: ensureApplication() called while not running");
     await running.registrar.ensure(applicationId);
+}
+
+/**
+ * The running `OperationStore`, for the HTTP layer (P4) to enqueue against
+ * and read status from. Guarded the same way as `ensureApplication()`.
+ */
+export function getStore(): OperationStore {
+    if (!running) throw new Error("wiring: getStore() called while not running");
+    return running.store;
+}
+
+/**
+ * The running `ConnectorManager`, for the HTTP layer's synchronous read
+ * routes (get/search) to acquire a lease against directly -- those never go
+ * through the operation table.
+ */
+export function getManager(): ConnectorManager {
+    if (!running) throw new Error("wiring: getManager() called while not running");
+    return running.manager;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -293,6 +313,7 @@ export async function start(config: WiringConfig = loadWiringConfig()): Promise<
 
         running = {
             pool,
+            store,
             manager,
             dispatcher,
             registrar,
