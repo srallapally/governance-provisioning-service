@@ -12,6 +12,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "lint": "eslint .",
     "soak": "tsx test/load/soak.ts",
+    "soak:http": "tsx test/load/soakHttp.ts",
     "test": "vitest run",
     "test:pg": "vitest run test/contract/operation-store.pg.test.ts",
     "test:watch": "vitest",
