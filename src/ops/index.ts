@@ -1,4 +1,4 @@
-export { OperationStore, OPERATIONS_SCHEMA_PATH } from "./OperationStore.js";
+export { OperationStore, OPERATIONS_SCHEMA_PATH, TERMINAL_STATUSES } from "./OperationStore.js";
 export type {
   OperationType,
   OperationStoreApi,

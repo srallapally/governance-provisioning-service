@@ -11,16 +11,19 @@ connection pooling. The boundary was locked at CP-5 under a single rule: what
 the facade needs to execute one operation stays there; what only the claim
 loop needs lives here.
 
-## Status: Phase P0
+## Status: Phase P4 delivered
 
-Scaffold, config, and documents. **No application code.**
-
-`src/index.ts` is a placeholder so `tsc` has an input. Phase P2 replaces it
-with the wiring module.
+Phases P0 through P4 are done: the operation table and dispatcher (`src/ops/`),
+application config and scheduling (`src/config/`), the wiring module that
+assembles them into a running process (`src/provisioning/wiring.ts`), and the
+HTTP surface (`src/http/`) — `openapi.yaml`'s routes, bearer-JWT auth, and the
+NDJSON streaming search. `src/index.ts` is the real entrypoint: it starts the
+data path, mounts the HTTP server, and drains on `SIGTERM`/`SIGINT`.
 
 See [`PROVISIONING_SERVICE_PLAN.md`](./PROVISIONING_SERVICE_PLAN.md) for the
-phases and, at the top of that file, the P0 findings — including six items
-that could not be determined and the phase each one blocks.
+phases (P5 onward is not started) and, at the top of that file, the P0
+findings — plus a standing **Backlog** section at the end for items that
+don't block a numbered phase.
 
 ## Design
 
@@ -38,8 +41,8 @@ interleave: `create:<objectClass>:<nameAttrValue>` for creates,
 `uid:<objectClass>:<uid>` for update, delete, and deltas.
 
 The HTTP contract is [`openapi.yaml`](./openapi.yaml). Its schema vocabulary
-came from the framework at CP-5; the paths are authored from the plan's Phase
-P4 and are provisional until P4 implements them.
+came from the framework at CP-5; the paths are implemented (Phase P4) and
+that file is now the authority over the plan's prose, not the reverse.
 
 ## Development
 
@@ -76,5 +79,24 @@ alongside a live claim loop.
 Node 22. TypeScript strict, with `exactOptionalPropertyTypes` and
 `noUncheckedIndexedAccess` copied from the framework so code moves between the
 two repositories without a typecheck surprise.
+
+### Running
+
+```bash
+DATABASE_URL=postgres://...            \
+CONNECTOR_BUNDLE_DIR=/path/to/bundles  \
+APP_CONFIG_DIR=/path/to/app-configs    \
+JWT_JWKS_URI=https://.../jwks.json     \
+JWT_EXPECTED_ISS=https://issuer:443    \
+JWT_EXPECTED_AUD=provisioning-service  \
+npx tsx src/index.ts
+```
+
+`PORT` defaults to 3000. `wiring.ts`'s own config (drain budget, shutdown
+grace, pool statement timeout) and `auth.ts`'s (allowed algorithms, clock
+skew, max token age, required scope) each have documented defaults — see
+those files' `loadWiringConfig()`/`validateJwtConfig()` for the full env var
+list. `SIGTERM`/`SIGINT` close the HTTP server first, then drain the
+dispatcher, so nothing new can enqueue while in-flight work finishes.
 
 [fw]: https://github.com/srallapally/governance-connector-framework

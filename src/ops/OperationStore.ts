@@ -33,7 +33,13 @@ export const OPERATIONS_SCHEMA_PATH = path.join(
  */
 export type OperationType = "CREATE" | "UPDATE" | "DELETE" | "ADD_VALUES" | "REMOVE_VALUES";
 
-const TERMINAL_STATUSES: readonly OperationOutcome[] = [
+/**
+ * The four terminal outcomes, in the shape a caller checks a status against.
+ *
+ * Exported so the HTTP status route (P4) derives `outcome` from `status` off
+ * this one list rather than keeping a second copy that could drift from it.
+ */
+export const TERMINAL_STATUSES: readonly OperationOutcome[] = [
   "SUCCEEDED",
   "REJECTED_PRE_DISPATCH",
   "FAILED_CONFIRMED",
@@ -104,6 +110,12 @@ export interface OperationStatusRow {
   finalizedAt: Date | null;
   /** True when the row came from operations_history because the hot row has aged out. */
   fromHistory: boolean;
+  /**
+   * Absent once a row has aged into `operations_history`, which is
+   * deliberately slim and carries no `priority` column (see the schema
+   * comment on that table). Present for every hot row.
+   */
+  priority?: OperationPriority;
 }
 
 export interface PendingCounts {
@@ -679,7 +691,7 @@ export class OperationStore implements OperationStoreApi {
   async getStatus(id: string): Promise<OperationStatusRow | null> {
     if (!isOperationId(id)) return null;
     const hot = await this.pool.query(
-        `SELECT id, instance_id, object_class, op_type, status, attempt_count,
+        `SELECT id, instance_id, object_class, op_type, status, priority, attempt_count,
                 result, error_code, created_at, finalized_at
            FROM operations
           WHERE id = $1`,
@@ -694,6 +706,7 @@ export class OperationStore implements OperationStoreApi {
         objectClass: String(row.object_class),
         opType: row.op_type as OperationType,
         status: row.status as OperationStatus,
+        priority: row.priority as OperationPriority,
         attemptCount: Number(row.attempt_count),
         result: row.result ?? null,
         errorCode: row.error_code ?? null,

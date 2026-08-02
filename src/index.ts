@@ -12,16 +12,31 @@
  * a half-wired process running, and a signal must drain rather than exit
  * immediately, because nothing else will give an in-flight operation the
  * chance to finish or be left resumably `RUNNING` for the reaper.
+ *
+ * P4 adds the HTTP server on top. Shutdown order matters: `server.close()`
+ * first, so nothing new can enqueue while `stop()` drains the dispatcher,
+ * then `stop()` itself.
  */
-import { start, stop } from "./provisioning/wiring.js";
+import type { Server } from "node:http";
+import { ensureApplication, getManager, getStore, start, stop } from "./provisioning/wiring.js";
+import { createApp } from "./http/app.js";
+import { requireJwt } from "./http/auth.js";
+import { loadHttpConfig } from "./http/loadHttpConfig.js";
 
 let shuttingDown = false;
+let server: Server | undefined;
 
 function onSignal(signal: string): void {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[index] ${signal} received, draining...`);
-    stop()
+
+    const closeServer = server
+        ? new Promise<void>((resolve) => server!.close(() => resolve()))
+        : Promise.resolve();
+
+    closeServer
+        .then(() => stop())
         .then(() => {
             console.log("[index] stopped cleanly, exiting");
             process.exit(0);
@@ -34,6 +49,18 @@ function onSignal(signal: string): void {
 
 async function main(): Promise<void> {
     await start();
+
+    const app = createApp({
+        store: getStore(),
+        manager: getManager(),
+        ensureApplication,
+        authMiddleware: requireJwt(),
+    });
+    const { port } = loadHttpConfig();
+    server = app.listen(port, () => {
+        console.log(`[index] listening on ${port}`);
+    });
+
     process.on("SIGTERM", () => onSignal("SIGTERM"));
     process.on("SIGINT", () => onSignal("SIGINT"));
     console.log("[index] started");

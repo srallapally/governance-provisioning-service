@@ -691,24 +691,21 @@ exists, and a partition covers today.
   process and calls `drop_operations_partition`. Whether the service's role
   may execute DDL at runtime is a grant question that passes locally as
   superuser and fails in production. Verify with the *service's* role, not an
-  admin one.~~ **NOT YET ANSWERED.** The instance below was reached with the
-  Cloud SQL default `postgres` role (superuser), not a scoped service role,
-  because standing one up wasn't asked for as part of this check. This bullet
-  stays open — a least-privilege role that can only touch `operations`/
-  `operations_history` and the two partition functions still needs to be
-  created and re-run against, before this item can be marked satisfied.
+  admin one.~~ **NOT ANSWERED, moved to Backlog.** The instance below was
+  reached with the Cloud SQL default `postgres` role (superuser), not a
+  scoped service role. See "Backlog" at the end of this file.
 - **Connection path.** ANSWERED for this instance: public IP, direct
   connection (`sslmode=require`, `uselibpqcompat=true` — the instance is
   SSL-only with no client-cert requirement; `pg`'s newer default treats
   `sslmode=require` as `verify-full` and fails without either this flag or a
-  downloaded server CA), no pooler in front. The transaction-pooling-proxy
-  question in the original bullet remains unanswered for any deployment that
-  does put one in front — this instance doesn't.
+  downloaded server CA), no pooler in front. ~~The transaction-pooling-proxy
+  question in the original bullet remains unanswered~~ moved to Backlog — this
+  instance doesn't have one in front, so nothing here exercises it.
 - ~~**Server version.** The DDL is verified on 16.~~ ANSWERED: also verified
   clean on **PostgreSQL 18.4** (Cloud SQL Enterprise, `db-custom-2-8192`,
   `us-central1`) — `scripts/db-setup.sh` fresh-install path and the full pg
   contract suite (57/57) both pass unmodified.
-- **Connection limits.** Still open — not checked against this instance.
+- ~~**Connection limits.**~~ NOT ANSWERED, moved to Backlog.
 - ~~**Latency.** The claim query is a round trip per batch. Local figures
   overstate throughput; record the delta so P8's numbers are read
   correctly.~~ ANSWERED, and it cost a real finding: the pg contract suite's
@@ -727,19 +724,17 @@ exists, and a partition covers today.
   fix was verified by pass/fail at two timeout values, not by timing
   instrumentation); if P8's soak needs a number, measure it there directly.
 
-**Accept:** partially met. `scripts/db-setup.sh` and the full pg contract
-suite both run clean against `iga-prov-db` (PostgreSQL 18.4, Cloud SQL,
-project `iga-provisioning-service`) — but with the `postgres` superuser role,
-not a scoped service role, so the role-permissions item above is still open.
-Server version and (indirectly) latency are recorded. Pooling mode is
-recorded for this instance's own topology (none) but the proxy-specific
-question is untested. Connection limits untested.
+**Accept:** partially met, and treated as sufficient to move on. `scripts/db-setup.sh`
+and the full pg contract suite both run clean against `iga-prov-db`
+(PostgreSQL 18.4, Cloud SQL, project `iga-provisioning-service`). Server
+version and (indirectly) latency are recorded. The three items that needed
+either a service-role grant or a deployment topology this instance doesn't
+have (scoped role, connection limits, pooling-proxy behavior) are moved to
+"Backlog" at the end of this file rather than left blocking here.
 
 **Blocked:** no longer blocked on instance availability — `iga-prov-db`
 exists and is reachable from a machine with normal internet egress (this
-sandboxed session itself cannot reach it directly; see below). Still open:
-scoped service role, connection limits, and pooling-proxy behavior if a
-deployment puts one in front.
+sandboxed session itself cannot reach it directly; see below).
 
 **Note on how this was run:** this Claude Code session's own sandbox cannot
 reach Cloud SQL at all — its outbound network is an HTTPS CONNECT-only proxy
@@ -756,10 +751,11 @@ text.
 Auth, settled at P0: every route sits behind a bearer token from the same
 OAuth authority the service uses outbound. Port
 `packages/websocket/src/security/auth.ts` — JWKS fetch and cache, algorithm
-allowlist, `iss`/`aud`/expiry checks, clock skew, replay cache — rather than
-writing a second one. Mount it in front of every route including the status
-endpoint: an operationId is a capability, and an unauthenticated reader could
-enumerate provisioning activity across applications.
+allowlist, `iss`/`aud`/expiry checks, clock skew, ~~replay cache~~ (ANSWERED:
+the actual file has no replay cache to port — see Delivered note below) —
+rather than writing a second one. Mount it in front of every route including
+the status endpoint: an operationId is a capability, and an unauthenticated
+reader could enumerate provisioning activity across applications.
 
 The authority is ForgeRock AM and its tokens are JWTs (confirmed from a
 sample at P0), so JWKS validation applies and introspection is not needed.
@@ -786,12 +782,79 @@ Read plane: get/search acquire through `ConnectorManager`, release in
 resume on drain; no buffering.
 
 **Accept:** route tests with `FakeConnector` through the real loader:
-202→SUCCEEDED with Uid; 429 with depth at cap; ADD_VALUES enqueue; 10k-object
-search with bounded memory, asserted by observation not vibes. Auth: no token
-is 401 on every route including status; a token signed by an unknown key is
-401; an expired token is 401; a token whose `iss` omits `:443` is 401 rather
-than passing; and a valid token **without** the required scope is 403, which
-is the test that matters most while `aud` cannot separate callers.
+202→SUCCEEDED with Uid; 429 with depth at cap; ADD_VALUES enqueue;
+~~10k-object search with bounded memory, asserted by observation not
+vibes~~ (ANSWERED, partially: see finding 5 below — the bounded-memory
+property is proven at the unit level instead, not via a literal 10k-row
+integration run). Auth: no token is 401 on every route including status; a
+token signed by an unknown key is 401; an expired token is 401; a token
+whose `iss` omits `:443` is 401 rather than passing; and a valid token
+**without** the required scope is 403, which is the test that matters most
+while `aud` cannot separate callers.
+
+**Delivered.** `src/http/{auth,filter,errors,objectsRoutes,operationsRoutes,
+app,loadHttpConfig}.ts`, `src/ops/nameAttribute.ts` (extracted, shared with
+`Dispatcher`), `src/index.ts` rewritten to mount the HTTP server. 55 new
+tests (`test/http/{auth,filter,objectsRoutes,operationsRoutes}.test.ts`),
+all passing with and without `DATABASE_URL`, plus a manual end-to-end smoke
+test of the real process (real JWKS server, real Postgres, `SIGTERM` →
+clean drain and exit, confirmed via the actual `[index]` log lines this
+time — see the P2 note about a lost-stdout false negative that this smoke
+test's shell handling avoided by signaling the innermost node process, not
+an `npm exec`/`tsx` wrapper PID).
+
+Findings (see `openapi.yaml`'s own info block and schema comments for the
+contract-facing half of these):
+
+1. **No replay cache to port.** The framework's actual `auth.ts` has JWKS
+   fetch/cache, algorithm allowlist, iss/aud/expiry, and clock skew — no
+   `TokenReplayCache`, no JTI handling. Confirmed two ways: reading the file
+   in full, and the framework's own `bearer-semantics.test.ts`, whose
+   comments say a JTI/replay setting is now deliberately *ignored* ("bearer
+   semantics"). An older description elsewhere in the framework repo
+   (`packages/core/CLAUDE.md`) still describes a replay cache — that
+   description, not the code, is almost certainly where this phase's
+   original text came from. Ported the actual file; no replay cache exists
+   in this service either.
+2. **No string filter grammar existed anywhere to reuse.** `core`'s
+   `parseFilter` validates an already-structured `Node` object; there is no
+   tokenizer for a query string. Wrote one (`src/http/filter.ts`),
+   deliberately narrow: a flat `and`-chain of SCIM-keyword comparisons, no
+   `or`/`not`/nesting. `openapi.yaml`'s `filter` param now documents the
+   real grammar instead of pointing at a module that doesn't parse strings.
+3. **`OperationState.priority`/`result.object` can't always be served.**
+   `operations_history` is deliberately slim (its own schema comment: "no
+   attrs and no result blob") — no `priority` column, no result JSON. Once
+   a row ages into history those fields are physically unavailable.
+   Corrected `openapi.yaml` rather than widen a table that was narrowed on
+   purpose: both are now documented as present-only-while-hot. Also added
+   `priority` to `OperationStore.getStatus()`'s hot-row `SELECT`, which
+   didn't select it even for hot rows before this phase.
+4. **`ConnectorManager.acquire()`'s "not registered"/"not supported" errors
+   have no type or code**, only a message string (confirmed by reading the
+   registry/manager source). `src/http/errors.ts` maps them to 404 via a
+   narrow, isolated message-substring check, documented as fragile by
+   construction. Consistent with the P2 precedent (the `shutdown()`
+   refcount gap): **worked around locally, not filed as a framework bug**
+   — moved to Backlog as a candidate for an upstream typed error instead.
+5. **`FakeConnector`'s streaming search loop doesn't await an async
+   `ResultsHandler`.** It checks `handler(obj) === false` without awaiting,
+   so a `Promise<boolean>`-returning handler (what `makeNdjsonHandler`
+   necessarily is, since it awaits `drain`) can never signal early-stop
+   through that path — a real end-to-end backpressure/disconnect test
+   against the fixture connector cannot exercise it. Not a defect worth
+   filing (a test double's loop is not lease-safety-relevant, unlike
+   finding 4's parent), so not filed. Worked around by extracting
+   `makeNdjsonHandler` as a standalone, exported function
+   (`src/http/objectsRoutes.ts`) and unit-testing it directly against a
+   mock sink — proves the actual `write()`-returns-false → await-`drain`
+   → resume logic, and the client-gone/response-already-ended early exits,
+   without needing a real socket or a connector that can drive them.
+
+One implementation note not itself a finding: `Idempotency-Key` (a header,
+caller-request metadata, not a body field) is the concrete answer to "caller
+request id" that this phase's original text left unspecified — added to
+`openapi.yaml`'s five mutation operations as a documented, optional header.
 
 ## Phase P5: partition maintenance in-process
 
@@ -928,3 +991,42 @@ Framework PR `feature/async-provisioning` → `main`; publish
 this repo's git dep for the published version; external-connectors CI pins the
 published core for type builds. Production rollout; sidecar threshold waits on
 real metrics.
+
+## Backlog
+
+Items that don't block any numbered phase but shouldn't be forgotten. Move an
+item out of here (back into a phase, or to "done") when something picks it up.
+
+- **Scoped least-privilege service role for Cloud SQL.** P3's role-permissions
+  check (whether the service's own role, not an admin one, may execute
+  runtime DDL — partition create/drop) was never actually exercised: the P3
+  verification run against `iga-prov-db` used the Cloud SQL default
+  `postgres` superuser. Create a role limited to `operations`/
+  `operations_history` and the two partition functions, and rerun the pg
+  contract suite and `scripts/db-setup.sh` with it before P5 (partition
+  maintenance in-process) ships against this instance.
+- **Connection limits for `iga-prov-db`.** Not checked. The dispatcher pool is
+  deliberately small (`max: 5`, set at P2), so this is unlikely to bind, but
+  the instance's `max_connections` and any per-user cap should be recorded
+  next to that number before relying on it in production.
+- **Transaction-pooling-proxy behavior.** `iga-prov-db` is a direct
+  connection with no pooler in front, so this was never exercised here.
+  `pg_advisory_xact_lock` and `FOR UPDATE SKIP LOCKED` are transaction-scoped
+  and should survive a transaction-pooling proxy (e.g. PgBouncer in
+  transaction mode), but session state and server-side prepared statements do
+  not. Verify against whichever pooling mode, if any, sits in front of the
+  real production topology once that's known — likely alongside P7
+  (configuration) or P8 (integrated soak).
+- **Typed error for `ConnectorManager.acquire()`'s "instance not
+  registered"/"not supported" cases** (P4 finding 4). Today these are plain
+  `Error`s with only a message string; `src/http/errors.ts` maps them to 404
+  via an isolated message-substring check, documented as fragile. An
+  upstream typed error (a code, not just text) would let that check become a
+  real `instanceof`/discriminant match. Framework-side change — would need
+  filing in the framework's `BUG_LOG.md` (or an RFE) if picked up, not
+  patched from this repo.
+- **Filter grammar: `or`/`not`/nesting.** `src/http/filter.ts` (P4) only
+  supports a flat `and`-chain of comparisons, deliberately, to keep the
+  phase scoped. Extend if a caller actually needs a disjunction or a
+  negation — SCIM's grammar (parentheses, `or`, `not`) is the natural
+  reference if/when this is picked up.
