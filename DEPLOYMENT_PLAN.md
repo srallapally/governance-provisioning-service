@@ -58,10 +58,13 @@ work.
 Built and verified (see README's Docker section). `Dockerfile`'s `runtime`
 target: `node:22-alpine`, non-root (`USER app`), no dev dependencies,
 `HEALTHCHECK` against `/healthz` using Node's own `fetch` (no extra OS
-package). Connector bundles get baked in at build time via
-`CONNECTOR_BUNDLES_DIR` (default: the empty `docker/connector-bundles/`
-placeholder — see that directory's own README for how a real build
-supplies real bundles).
+package). Connector bundles get baked in at build time from
+`docker/connector-bundles/` (empty by default — see that directory's own
+README, and the README's "Building and publishing the production image"
+runbook, for how a real build supplies real bundles: they get copied into
+that directory before `docker build` runs, not pointed at via a build ARG
+— Docker's `COPY` can't reach outside the build context, so there's no
+ARG that could point at an external checkout instead).
 
 This same image, unmodified, is what ships to GKE — the `runtime` target
 is already production-shaped, not a local-only artifact. `docker-compose.yml`
@@ -257,8 +260,8 @@ the existing `build-test` job:
 
 ## What ships now vs. later
 
-**Done:** `Dockerfile`, `docker-compose.yml`, `/healthz`/`/readyz`. This
-document.
+**Done:** `Dockerfile`, `docker-compose.yml`, `scripts/preflight.sh`,
+`/healthz`/`/readyz`. This document.
 
 **Explicitly not done, and not part of this plan's PR:** any k8s manifest
 (Deployment, Service, ConfigMap, HPA, PDB), the Cloud SQL Auth Proxy
