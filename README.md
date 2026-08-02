@@ -141,6 +141,18 @@ that file is now the authority over the plan's prose, not the reverse.
   (a separate repository) records the framework/service boundary decisions
   (CP-5 onward) this service's design leans on.
 
+## Clients
+
+- [`clients/node/`](./clients/node/) — a Node.js client covering auth, all
+  five mutation routes, the two synchronous read routes, idempotency-key
+  construction, and outcome polling. Separately versioned and tested; not
+  wired into this repository's own build/lint/CI. See its own README for
+  usage, including why its idempotency-key builder is scoped
+  (`instanceId:objectClass:identity:orderingKey`) rather than a bare string —
+  `OperationStore.enqueue`'s dedup lookup is not scoped to
+  `(instanceId, objectClass)`, and this is the client-side mitigation until
+  that's addressed server-side.
+
 ## Development
 
 ```bash

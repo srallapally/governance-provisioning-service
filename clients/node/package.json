@@ -1,0 +1,17 @@
+{
+  "name": "@iga/provisioning-service-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node.js client for governance-provisioning-service: auth, object CRUD, idempotency-key construction, and outcome polling.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}
