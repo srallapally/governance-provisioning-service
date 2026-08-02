@@ -8,8 +8,8 @@
 import type { Lease } from "@governance-connector-framework/core";
 
 /**
- * The object class's declared naming attribute, or the ICF default
- * (`__NAME__`) when schema lookup fails or doesn't declare one.
+ * The object class's declared naming attribute, or the default (`__NAME__`)
+ * when schema lookup fails or doesn't declare one.
  *
  * Schema is advisory here, not required: a connector that doesn't implement
  * `schema()`, or one whose schema call fails, still gets a usable answer.
@@ -20,7 +20,7 @@ export async function resolveNameAttribute(lease: Lease, objectClass: string): P
     const oc = schema?.objectClasses?.find((c: any) => c.name === objectClass);
     if (oc?.nameAttribute) return String(oc.nameAttribute);
   } catch {
-    // Schema is advisory here; the ICF default is the safe fallback.
+    // Schema is advisory here; the default is the safe fallback.
   }
   return "__NAME__";
 }

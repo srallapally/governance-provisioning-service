@@ -283,7 +283,7 @@ async function main(): Promise<void> {
       const res = await fetch(`${base}/instances/${instanceId}/objects/${OBJECT_CLASS}`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-        // __priority isn't a real ICF attribute; it's how the fixture correlates
+        // __priority isn't a real connector attribute; it's how the fixture correlates
         // a recorded attempt back to the priority class that enqueued it, since
         // the connector SPI has no concept of priority.
         body: JSON.stringify({ attributes: { __NAME__: name, __priority: priority }, priority }),

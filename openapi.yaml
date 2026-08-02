@@ -270,7 +270,7 @@ components:
       in: path
       required: true
       schema: { type: string }
-      description: ICF object class, e.g. __ACCOUNT__ or __GROUP__.
+      description: Connector object class, e.g. __ACCOUNT__ or __GROUP__.
     Uid:
       name: uid
       in: path

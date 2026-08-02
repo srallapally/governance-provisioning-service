@@ -727,10 +727,11 @@ export class Dispatcher {
   /**
    * Apply a delta to a multi-valued attribute.
    *
-   * Modelled on ICF's UpdateAttributeValuesOp rather than on a flag riding an
-   * ordinary update: a delta is a different operation against the target, not
-   * a replace wearing a marker, and representing it as one is what let the
-   * previous retry gate guard a code path that could never execute.
+   * Modelled on the framework's `UpdateAttributeValuesOp` rather than on a
+   * flag riding an ordinary update: a delta is a different operation against
+   * the target, not a replace wearing a marker, and representing it as one is
+   * what let the previous retry gate guard a code path that could never
+   * execute.
    */
   private async attemptDelta(
       op: ClaimedOperation,
