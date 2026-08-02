@@ -50,6 +50,9 @@ export function baseConfig(probe: PgProbe, overrides: Partial<WiringConfig> = {}
     statementTimeoutMs: 5_000,
     partitionRetentionDays: 1,
     partitionMaintenanceIntervalMs: 3_600_000,
+    dispatcherPoolMax: 5,
+    claimIntervalMs: 25,
+    reaperThresholdMs: 10 * 60_000,
     logger: { warn: () => { /* quiet in tests */ }, error: () => { /* quiet in tests */ } },
     ...overrides,
   };

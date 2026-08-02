@@ -11,21 +11,22 @@ connection pooling. The boundary was locked at CP-5 under a single rule: what
 the facade needs to execute one operation stays there; what only the claim
 loop needs lives here.
 
-## Status: Phase P5 delivered
+## Status: Phase P7 delivered
 
-Phases P0 through P5 are done: the operation table and dispatcher (`src/ops/`),
-application config and scheduling (`src/config/`), the wiring module that
-assembles them into a running process (`src/provisioning/wiring.ts`), the
-HTTP surface (`src/http/`) — `openapi.yaml`'s routes, bearer-JWT auth, and the
-NDJSON streaming search — and in-process partition maintenance
-(`src/ops/PartitionMaintainer.ts`): an hourly timer that ensures upcoming
-partitions exist, drops fully-terminal ones past retention, and reports how
-many days ahead a partition already exists. `src/index.ts` is the real
-entrypoint: it starts the data path, mounts the HTTP server, and drains on
-`SIGTERM`/`SIGINT`.
+Phases P0 through P5 and P7 are done: the operation table and dispatcher
+(`src/ops/`), application config and scheduling (`src/config/`), the wiring
+module that assembles them into a running process
+(`src/provisioning/wiring.ts`), the HTTP surface (`src/http/`) —
+`openapi.yaml`'s routes, bearer-JWT auth, and the NDJSON streaming search —
+in-process partition maintenance (`src/ops/PartitionMaintainer.ts`), and the
+service-level config block: dispatcher pool size/claim interval/reaper
+threshold, plus two boot-time cross-validations (issuer/JWKS same host,
+refuses to boot; inbound audience vs. `IGA_CLIENT_ID` collapse, warns).
+`src/index.ts` is the real entrypoint: it starts the data path, mounts the
+HTTP server, and drains on `SIGTERM`/`SIGINT`.
 
 See [`PROVISIONING_SERVICE_PLAN.md`](./PROVISIONING_SERVICE_PLAN.md) for the
-phases (P7 onward is not started; P6 — metrics binding — was deferred
+phases (P8 onward is not started; P6 — metrics binding — was deferred
 wholesale to the standing **Backlog** section, since it blocks neither P7 nor
 P8) and, at the top of that file, the P0 findings.
 

@@ -79,6 +79,12 @@ export interface WiringConfig {
     partitionRetentionDays: number;
     /** How often the partition maintenance pass runs, in ms. Default 3_600_000 (hourly). */
     partitionMaintenanceIntervalMs: number;
+    /** Max connections in the shared pool (OperationStore, Dispatcher, PartitionMaintainer). Default 5. */
+    dispatcherPoolMax: number;
+    /** How often the dispatcher attempts a claim cycle, in ms. Default 25ms. */
+    claimIntervalMs: number;
+    /** How stale a RUNNING row must be before the reaper reclaims it, in ms. Default 10 minutes. */
+    reaperThresholdMs: number;
     /**
      * `warn` is used only by partition maintenance (P5), for a refused drop
      * -- correct behavior that still needs to be loud, not an error.
@@ -94,6 +100,8 @@ const CONFIG_DEFAULTS = {
     poolMax: 5,
     partitionRetentionDays: 1,
     partitionMaintenanceIntervalMs: 3_600_000,
+    claimIntervalMs: 25,
+    reaperThresholdMs: 10 * 60_000,
 };
 
 function requireEnv(env: NodeJS.ProcessEnv, key: string): string {
@@ -122,10 +130,13 @@ function optionalPositiveInt(env: NodeJS.ProcessEnv, key: string, fallback: numb
  * Throws synchronously on the first problem found -- the cheapest possible
  * failure, before anything is constructed.
  *
- * This is a minimal surface for this phase only, not the full P7 config
- * block (dispatcher pool size, retention window, reaper threshold, claim
- * interval are not here -- they stay at their `Dispatcher`/`OperationStore`
- * defaults until P7 exposes them).
+ * P7 landed the config block named in the plan: dispatcher pool size,
+ * retention window (P5), reaper threshold, claim interval, drain budget
+ * (P2), and connector directory (P1) are all here now. Deliberately still
+ * not here, staying at `Dispatcher`'s hardcoded defaults: `claimBatchSize`,
+ * `maxAttempts`, `backoffBaseMs`/`backoffMaxMs`, `readBackGraceMs`, and
+ * `reaperIntervalMs` -- a separate retry-tuning concern the plan's config
+ * block never named, not built speculatively ahead of an actual need.
  */
 export function loadWiringConfig(env: NodeJS.ProcessEnv = process.env): WiringConfig {
     const databaseUrl = requireEnv(env, "DATABASE_URL");
@@ -151,6 +162,10 @@ export function loadWiringConfig(env: NodeJS.ProcessEnv = process.env): WiringCo
             env, "PARTITION_RETENTION_DAYS", CONFIG_DEFAULTS.partitionRetentionDays),
         partitionMaintenanceIntervalMs: optionalPositiveInt(
             env, "PARTITION_MAINTENANCE_INTERVAL_MS", CONFIG_DEFAULTS.partitionMaintenanceIntervalMs),
+        dispatcherPoolMax: optionalPositiveInt(env, "DISPATCHER_POOL_MAX", CONFIG_DEFAULTS.poolMax),
+        claimIntervalMs: optionalPositiveInt(env, "DISPATCHER_CLAIM_INTERVAL_MS", CONFIG_DEFAULTS.claimIntervalMs),
+        reaperThresholdMs: optionalPositiveInt(
+            env, "DISPATCHER_REAPER_THRESHOLD_MS", CONFIG_DEFAULTS.reaperThresholdMs),
         logger: { warn: (m) => console.warn(m), error: (m) => console.error(m) },
     };
 
@@ -296,7 +311,7 @@ export async function start(config: WiringConfig = loadWiringConfig()): Promise<
     try {
         pool = new Pool({
             connectionString: config.databaseUrl,
-            max: CONFIG_DEFAULTS.poolMax,
+            max: config.dispatcherPoolMax,
             statement_timeout: config.statementTimeoutMs,
         });
         // An explicit reachability check: a bad DATABASE_URL must fail here,
@@ -329,7 +344,12 @@ export async function start(config: WiringConfig = loadWiringConfig()): Promise<
             store,
             manager,
             registry,
-            config: { metrics, logger: config.logger },
+            config: {
+                metrics,
+                logger: config.logger,
+                claimIntervalMs: config.claimIntervalMs,
+                reaperThresholdMs: config.reaperThresholdMs,
+            },
             scheduling: registrar.schedulingOf.bind(registrar),
         });
         dispatcher.start();

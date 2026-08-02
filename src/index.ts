@@ -18,10 +18,11 @@
  * then `stop()` itself.
  */
 import type { Server } from "node:http";
-import { ensureApplication, getManager, getStore, start, stop } from "./provisioning/wiring.js";
+import { ensureApplication, getManager, getStore, loadWiringConfig, start, stop } from "./provisioning/wiring.js";
 import { createApp } from "./http/app.js";
-import { requireJwt } from "./http/auth.js";
+import { requireJwt, getJwtConfig } from "./http/auth.js";
 import { loadHttpConfig } from "./http/loadHttpConfig.js";
+import { checkAudienceIdentityCollapse } from "./http/identityCheck.js";
 
 let shuttingDown = false;
 let server: Server | undefined;
@@ -48,7 +49,12 @@ function onSignal(signal: string): void {
 }
 
 async function main(): Promise<void> {
-    await start();
+    const wiringConfig = loadWiringConfig();
+
+    const collapseWarning = checkAudienceIdentityCollapse(wiringConfig.iga, getJwtConfig());
+    if (collapseWarning) console.warn(`[index] ${collapseWarning}`);
+
+    await start(wiringConfig);
 
     const app = createApp({
         store: getStore(),
