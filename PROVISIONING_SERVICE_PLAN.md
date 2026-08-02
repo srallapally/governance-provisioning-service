@@ -1142,11 +1142,41 @@ correctly reaches its real ceiling of 3) and `OPS=1000` (no regression,
 concurrency still reaches 8/10, 12 concurrent starts) -- both clean, 0 lane
 violations, 0 INDETERMINATE.
 
+**A second real bug, caught by the first real Cloud SQL run that actually
+completed a report**: after the name-allocation fix above, a Cloud SQL run
+at `OPS=100` printed a valid, clean report (`batch concurrency reached: 3
+(budget 10)`, 1 interactive attempt observed starting during a batch
+attempt) and then crashed the whole process during shutdown --
+`Error: Cannot use a pool after calling end on the pool`, thrown inside
+`OperationStore.claimBatch`, called from `Dispatcher.runCycle`, unhandled.
+
+Root cause: `Dispatcher.stop()` only awaits `inFlight` (attempts already
+claimed and executing) -- it has no way to know about, or wait for, a
+`runCycle()` currently stuck awaiting `claimBatch()` itself, since nothing
+is added to `inFlight` until the claim resolves. Under local Postgres's
+near-zero latency this race window never manifested in any verification
+run this phase (including the two clean local runs recorded above); real
+Cloud SQL's round-trip latency (60-200ms+, the same characteristic that
+made P3's default vitest timeout too short) is wide enough for a straggling
+claim cycle to still be querying when `soakHttp.ts`'s teardown sequence
+proceeds to close the pool underneath it. `runCycle()`'s body (invoked via
+a bare `void this.runCycle()` in `start()`'s `setInterval` callback) had no
+try/catch around it -- unlike its siblings `finalize()`/`safeRequeue()`,
+which already tolerate a closed pool the same way `stop()`'s own docstring
+describes for in-flight attempts. Fixed in `src/ops/Dispatcher.ts`: added a
+`catch` clause to `runCycle()` that logs and returns `0`, degrading a
+straggling claim cycle to the same "stranded `RUNNING` row, recovered by
+`reapStale()`" case the rest of the file already accepts, instead of an
+unhandled rejection that crashes the process. Regression test added to
+`test/Dispatcher.test.ts` (`lifecycle` describe block) using a mocked
+`store.claimBatch()` rejection to reproduce the race deterministically
+without needing real Cloud SQL latency.
+
 **Not done, and not part of this change**: the actual `dev Cloud SQL` run
 (this sandbox has no path to real Cloud SQL, confirmed at P3 -- same
 constraint), recording those numbers here, and writing CP-7 in the
-framework's checkpoint log. All three happen once the real run returns
-results.
+framework's checkpoint log. All three happen once a real run completes
+cleanly end-to-end, without the crash above.
 
 ## After P8
 

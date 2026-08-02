@@ -583,6 +583,29 @@ describe("lifecycle", () => {
         // by the time stop() resolves, not merely been given up on.
         expect(dispatcher.inFlightCount).toBe(0);
     });
+
+    it("logs and returns 0 instead of crashing when a claim cycle fails (P8: pool closed mid-cycle)", async () => {
+        // A real Cloud SQL run hit this: stop() has already returned and
+        // closed the pool by the time a straggling runCycle() is still
+        // awaiting claimBatch(), which then rejects with "Cannot use a pool
+        // after calling end on the pool". That used to propagate out of the
+        // bare `void this.runCycle()` in start()'s setInterval callback as
+        // an unhandled rejection and crash the process; it should now be
+        // caught, logged, and degrade to the same "0 claimed this cycle" as
+        // any other empty cycle.
+        const errors: string[] = [];
+        setup({ dispatcherConfig: { logger: { error: (msg: string) => errors.push(msg) } } });
+        await enqueue({ idempotencyKey: "cf1", nameAttrValue: "x", attrs: { __NAME__: "x" } });
+
+        vi.spyOn(store, "claimBatch").mockRejectedValueOnce(
+            new Error("Cannot use a pool after calling end on the pool"));
+
+        const claimed = await dispatcher.runCycle();
+
+        expect(claimed).toBe(0);
+        expect(dispatcher.inFlightCount).toBe(0);
+        expect(errors.some(m => m.includes("Cannot use a pool after calling end on the pool"))).toBe(true);
+    });
 });
 
 describe("read-back deferral (BUG-1)", () => {
