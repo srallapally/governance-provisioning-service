@@ -1213,6 +1213,38 @@ default `OPS=1000` (concurrency 8/10, 24 concurrent starts) -- both clean,
 0 lane violations, 0 INDETERMINATE, full test suite (314 tests) passing
 against local Postgres.
 
+**A fourth real bug, introduced by the fix above and caught by the very
+next real Cloud SQL run**: `drain tail: 4/100 ops terminal, 0ms after the
+last enqueue` -- the run stalled almost completely, with 67 rows stuck
+`PENDING` and 11 stuck `RUNNING` when the timeout gave up. All 100 rows had
+been genuinely inserted (the outcome counts sum to 100), so this was a
+drain-side stall, not an enqueue-side one.
+
+Root cause: `OperationStore.enqueue()` (`src/ops/OperationStore.ts`) holds
+one pool connection for its entire transaction (`BEGIN`, advisory lock,
+dedup `SELECT`, `INSERT`, `COMMIT`) -- not released between queries. That
+pool (`dispatcherPoolMax`) is the same one the dispatcher's own
+claim/execute/finalize/reap traffic depends on, per `wiring.ts`'s own
+docstring ("shared pool -- OperationStore, Dispatcher, PartitionMaintainer").
+`soakHttp.ts` sized it at `Math.max(10, INSTANCES * 2)` = 10, a number
+picked for the dispatcher's own steady-state need with no regard for the
+`ENQUEUE_CONCURRENCY` (20) concurrent admissions the previous fix had just
+introduced. Against local Postgres a held connection is released in
+microseconds, so 20-against-10 never mattered; against real Cloud SQL's
+round-trip latency, 20 concurrent admissions could hold every connection in
+the pool for as long as submission backlog remained, starving the
+dispatcher of any connection to claim or finalize anything.
+
+Fixed by sizing `dispatcherPoolMax` to comfortably exceed the offered
+admission concurrency, not just the dispatcher's own need:
+`Math.max(20, ENQUEUE_CONCURRENCY + INSTANCES * 2)`. This is a soak-script
+config choice, not a `src/` change -- production deployments size
+`DISPATCHER_POOL_MAX` for their own expected concurrent admission load, the
+same tradeoff this script now makes explicit for itself. Reverified locally
+at both `OPS=100` and the default `OPS=1000` -- both clean, unaffected
+(local Postgres was never the environment where the undersized pool caused
+problems), full test suite (314 tests) still passing.
+
 ## After P8
 
 Framework PR `feature/async-provisioning` → `main`; publish

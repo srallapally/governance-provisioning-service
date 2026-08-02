@@ -57,6 +57,21 @@
 // starting the poller concurrently with enqueueing rather than after it, so
 // submissions actually arrive faster than the dispatcher can drain them and
 // `finishedAt` reflects real completion time.
+//
+// That fix introduced a third bug, also only visible against real Cloud SQL:
+// `OperationStore.enqueue()` holds one pool connection for its whole
+// multi-round-trip transaction (BEGIN, advisory lock, dedup SELECT, INSERT,
+// COMMIT), and that pool is the same one the dispatcher's claim/execute/
+// finalize/reap traffic depends on (wiring.ts's own docstring says so).
+// `dispatcherPoolMax` was sized only for the dispatcher's steady-state need
+// (`INSTANCES * 2`), not for `ENQUEUE_CONCURRENCY` concurrent admissions on
+// top of it -- against local Postgres a connection is held for microseconds
+// so this never mattered, but against real Cloud SQL's round-trip latency,
+// concurrent admissions alone could hold every connection in the pool for
+// as long as backlog remained, starving the dispatcher entirely. A real run
+// stalled at 4/100 ops terminal after the full timeout. Fixed by sizing the
+// pool to comfortably exceed the offered admission concurrency, not just the
+// dispatcher's own need.
 import { performance } from "node:perf_hooks";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -170,7 +185,21 @@ async function main(): Promise<void> {
     statementTimeoutMs: 5_000,
     partitionRetentionDays: 1,
     partitionMaintenanceIntervalMs: 3_600_000,
-    dispatcherPoolMax: Math.max(10, INSTANCES * 2),
+    // Shared by HTTP admission (OperationStore.enqueue()) and the dispatcher's
+    // claim/execute/finalize/reap traffic alike -- one pool, per wiring.ts's
+    // own docstring. enqueue() holds a single connection for its whole
+    // multi-round-trip transaction (BEGIN, advisory lock, dedup SELECT,
+    // INSERT, COMMIT), not just for one query, so ENQUEUE_CONCURRENCY
+    // concurrent admissions can hold up to that many connections for the
+    // entire submission phase. Sizing this at just INSTANCES*2 (enough for
+    // local Postgres, where each round trip is sub-millisecond so a
+    // connection is barely ever actually contended) let ENQUEUE_CONCURRENCY
+    // concurrent admissions saturate the whole pool under real Cloud SQL
+    // latency, starving the dispatcher of any connection to claim or finalize
+    // anything -- a real run stalled at 4/100 ops terminal after the full
+    // timeout. Must comfortably exceed the offered admission concurrency, not
+    // just the dispatcher's own steady-state need.
+    dispatcherPoolMax: Math.max(20, ENQUEUE_CONCURRENCY + INSTANCES * 2),
     claimIntervalMs: 25,
     reaperThresholdMs: 10 * 60_000,
     logger: { warn: (m) => console.warn(m), error: (m) => console.error(m) },
