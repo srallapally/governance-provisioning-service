@@ -61,7 +61,9 @@ function baseConfig(overrides: Partial<WiringConfig> = {}): WiringConfig {
         drainBudgetMs: 300,
         shutdownGraceMs: 100,
         statementTimeoutMs: 5_000,
-        logger: { error: () => { /* quiet in tests */ } },
+        partitionRetentionDays: 1,
+        partitionMaintenanceIntervalMs: 3_600_000,
+        logger: { warn: () => { /* quiet in tests */ }, error: () => { /* quiet in tests */ } },
         ...overrides,
     };
 }
@@ -118,6 +120,32 @@ describeWithPg(probe, "wiring", () => {
 
         // Idempotent: a second stop() (a second SIGTERM, or a race) is a no-op.
         await expect(stop()).resolves.toBeUndefined();
+    });
+
+    it("wires up partition maintenance: start() ensures tomorrow's partition even if it's missing", async () => {
+        const { dir, cleanup } = await makeAppConfigDir();
+        cleanupFns.push(cleanup);
+
+        const { rows: [{ suffix }] } = await verifyPool.query(
+            "SELECT to_char(current_date + 1, 'YYYYMMDD') AS suffix");
+        await verifyPool.query(`DROP TABLE IF EXISTS operations_${suffix}`);
+
+        await start(baseConfig({ appConfigDir: dir, partitionMaintenanceIntervalMs: 3_600_000 }));
+
+        // start() kicks off an immediate pass rather than waiting a full
+        // interval (PartitionMaintainer's own reasoning) -- poll briefly
+        // since that pass runs in the background, not awaited by start().
+        const deadline = Date.now() + 2_000;
+        let present = false;
+        while (!present) {
+            if (Date.now() > deadline) throw new Error("partition maintenance never ran");
+            const { rows } = await verifyPool.query(
+                "SELECT to_regclass($1) IS NOT NULL AS present", [`operations_${suffix}`]);
+            present = rows[0].present;
+            if (!present) await new Promise((r) => setTimeout(r, 20));
+        }
+
+        expect(present).toBe(true);
     });
 
     it("enqueues, claims, finishes, and stops promptly", async () => {

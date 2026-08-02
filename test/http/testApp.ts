@@ -48,7 +48,9 @@ export function baseConfig(probe: PgProbe, overrides: Partial<WiringConfig> = {}
     drainBudgetMs: 300,
     shutdownGraceMs: 100,
     statementTimeoutMs: 5_000,
-    logger: { error: () => { /* quiet in tests */ } },
+    partitionRetentionDays: 1,
+    partitionMaintenanceIntervalMs: 3_600_000,
+    logger: { warn: () => { /* quiet in tests */ }, error: () => { /* quiet in tests */ } },
     ...overrides,
   };
 }

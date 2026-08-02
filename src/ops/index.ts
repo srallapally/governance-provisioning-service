@@ -12,6 +12,9 @@ export type {
 export { Dispatcher } from "./Dispatcher.js";
 export type { DispatcherConfig, DispatcherDeps } from "./Dispatcher.js";
 
+export { PartitionMaintainer } from "./PartitionMaintainer.js";
+export type { PartitionMaintainerConfig } from "./PartitionMaintainer.js";
+
 export {
   admitAndEnqueue,
   laneKeyFor,

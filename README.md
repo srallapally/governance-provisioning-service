@@ -11,17 +11,21 @@ connection pooling. The boundary was locked at CP-5 under a single rule: what
 the facade needs to execute one operation stays there; what only the claim
 loop needs lives here.
 
-## Status: Phase P4 delivered
+## Status: Phase P5 delivered
 
-Phases P0 through P4 are done: the operation table and dispatcher (`src/ops/`),
+Phases P0 through P5 are done: the operation table and dispatcher (`src/ops/`),
 application config and scheduling (`src/config/`), the wiring module that
-assembles them into a running process (`src/provisioning/wiring.ts`), and the
+assembles them into a running process (`src/provisioning/wiring.ts`), the
 HTTP surface (`src/http/`) — `openapi.yaml`'s routes, bearer-JWT auth, and the
-NDJSON streaming search. `src/index.ts` is the real entrypoint: it starts the
-data path, mounts the HTTP server, and drains on `SIGTERM`/`SIGINT`.
+NDJSON streaming search — and in-process partition maintenance
+(`src/ops/PartitionMaintainer.ts`): an hourly timer that ensures upcoming
+partitions exist, drops fully-terminal ones past retention, and reports how
+many days ahead a partition already exists. `src/index.ts` is the real
+entrypoint: it starts the data path, mounts the HTTP server, and drains on
+`SIGTERM`/`SIGINT`.
 
 See [`PROVISIONING_SERVICE_PLAN.md`](./PROVISIONING_SERVICE_PLAN.md) for the
-phases (P5 onward is not started) and, at the top of that file, the P0
+phases (P6 onward is not started) and, at the top of that file, the P0
 findings — plus a standing **Backlog** section at the end for items that
 don't block a numbered phase.
 

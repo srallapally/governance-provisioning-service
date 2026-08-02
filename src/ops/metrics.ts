@@ -39,4 +39,21 @@ export const OPS_METRICS = {
     REAPED: "gcf.operations.reaped",
     /** End-to-end attempt latency per instance, in ms. */
     ATTEMPT_LATENCY_MS: "gcf.operations.attempt_latency_ms",
+    /**
+     * Consecutive days ahead (from today) a partition already exists for.
+     *
+     * The signal for "the partition timer died," not the drop-refusal
+     * counter below: a missing partition fails every enqueue against it with
+     * no warning beforehand, so this is what alerting should watch for
+     * reaching zero, days ahead of that outage actually starting.
+     */
+    PARTITION_DAYS_AHEAD: "gcf.operations.partition_days_ahead",
+    /**
+     * A partition past its retention window was NOT dropped because it still
+     * holds a non-terminal row. Labelled with the row count -- the refusal
+     * itself is correct (see drop_operations_partition's own comment), but
+     * it must be loud: a silent refusal is exactly what let one abandoned
+     * row pin a partition open indefinitely (framework BUG-2).
+     */
+    PARTITION_DROP_REFUSED: "gcf.operations.partition_drop_refused",
 } as const;
