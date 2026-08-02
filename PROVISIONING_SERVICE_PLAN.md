@@ -929,6 +929,11 @@ Notes and one interpretation worth recording:
 
 ## Phase P6: metrics binding
 
+**Deferred — moved to the Backlog** (see that section at the end of this
+file for the pointer). This phase's content below is left intact as the
+design reference for whenever it's picked back up; it does not block P7 or
+P8, which is why it was pulled rather than implemented in sequence.
+
 Revised at P0: there is no metrics stack to bind to. The instrumentation is
 still worth having — the surface below is what an operator needs to answer
 "is provisioning falling behind" — so the phase keeps its content and changes
@@ -1077,3 +1082,12 @@ item out of here (back into a phase, or to "done") when something picks it up.
   phase scoped. Extend if a caller actually needs a disjunction or a
   negation — SCIM's grammar (parentheses, `or`, `not`) is the natural
   reference if/when this is picked up.
+- **Phase P6: metrics binding.** Deferred wholesale, not partially — see
+  that phase's own section for the full design (structured-JSON stdout
+  sink, bounded in-memory snapshot sink, wiring the framework's
+  `startEventLoopLagMonitor`, all fanned out from `wiring.ts`'s single
+  `metrics` variable so no existing call site changes). Doesn't block P7 or
+  P8. Most of the named metric surface is already flowing today through the
+  P2 placeholder (`src/provisioning/consoleMetricsSink.ts`) — what's
+  actually missing is the structured format, the snapshot, and the
+  event-loop-lag wiring, not new instrumentation at call sites.

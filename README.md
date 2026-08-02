@@ -25,9 +25,9 @@ entrypoint: it starts the data path, mounts the HTTP server, and drains on
 `SIGTERM`/`SIGINT`.
 
 See [`PROVISIONING_SERVICE_PLAN.md`](./PROVISIONING_SERVICE_PLAN.md) for the
-phases (P6 onward is not started) and, at the top of that file, the P0
-findings — plus a standing **Backlog** section at the end for items that
-don't block a numbered phase.
+phases (P7 onward is not started; P6 — metrics binding — was deferred
+wholesale to the standing **Backlog** section, since it blocks neither P7 nor
+P8) and, at the top of that file, the P0 findings.
 
 ## Design
 
