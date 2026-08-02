@@ -1178,6 +1178,41 @@ constraint), recording those numbers here, and writing CP-7 in the
 framework's checkpoint log. All three happen once a real run completes
 cleanly end-to-end, without the crash above.
 
+**A third real bug, caught by the first real Cloud SQL run that completed
+without crashing**: the report it printed was internally inconsistent --
+`drain: 100 ops in 464ms` alongside `batch latency p50 17093.2ms p99
+33862.9ms`, and `batch concurrency reached: 1 (budget 10)` with `0`
+concurrent starts, on a scenario that had reliably reached 3-8/10 and
+several concurrent starts in every local run this phase.
+
+Root cause, in `test/load/soakHttp.ts`, not `src/`: the enqueue loop
+submitted ops one at a time (`for (...) { await fetch(...) }`), and
+`pollUntilDrained` didn't start polling until that whole loop finished.
+Against local Postgres neither half of that mattered -- the loop was fast
+enough, and the timing gap it created was negligible. Against real Cloud
+SQL, each sequential POST cost a genuine round trip, which had two
+independent effects: (1) it paced submissions slowly enough that the
+dispatcher (`claimIntervalMs=25ms`, 400ms connector latency) usually
+finished an instance's previous op before the next one for that instance
+was even enqueued, self-limiting observed concurrency to 1 regardless of
+the configured budget -- and silently: the fail condition only fires once
+`maxBatchConcurrency` approaches the budget, so a run that never generated
+enough concurrent load to approach it reports `OK` without the reservation
+ever actually being exercised; (2) `finishedAt` was only ever recorded once
+polling started, so an op that finished processing early in the enqueue
+loop still reported a latency inflated by however long the rest of the
+loop took to run -- explaining the impossible-looking numbers above almost
+exactly (drain measured only the tail after the loop had already finished,
+by which point nearly everything was already done).
+
+Fixed by submitting with bounded concurrency (`ENQUEUE_CONCURRENCY`,
+default 20) and starting the poller concurrently with enqueueing instead of
+after it. Reverified locally at both `OPS=100` (concurrency 3/10, 2
+concurrent starts, latencies now consistent with drain timing) and the
+default `OPS=1000` (concurrency 8/10, 24 concurrent starts) -- both clean,
+0 lane violations, 0 INDETERMINATE, full test suite (314 tests) passing
+against local Postgres.
+
 ## After P8
 
 Framework PR `feature/async-provisioning` → `main`; publish

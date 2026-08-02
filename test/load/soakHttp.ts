@@ -34,6 +34,29 @@
 // script: load is driven through the real loader, so this script never
 // touches the connector instances it builds, unlike soak.ts's hand-wired
 // connectors.
+//
+// A real Cloud SQL run caught a second, more subtle bug in this script (not
+// in src/): the enqueue loop submitted ops one at a time, `await`ing each
+// HTTP POST before starting the next. Against local Postgres that loop is
+// fast enough not to matter, but against real Cloud SQL each POST costs a
+// genuine round trip -- pacing submissions slowly enough that the dispatcher
+// (claimIntervalMs=25ms, LATENCY_MS=400ms per attempt) usually finished an
+// instance's previous op before the next one for that instance was even
+// enqueued. That self-limited observed concurrency to 1 regardless of the
+// configured budget, and it wasn't a false pass by accident: the fail
+// condition only fires once `maxBatchConcurrency` reaches the budget, so a
+// run that never generated enough concurrent load to approach the budget
+// reports "OK" without ever having exercised the reservation. The same
+// sequential loop also broke the latency numbers: `finishedAt` was only ever
+// recorded by `pollUntilDrained`, which didn't start polling until the
+// entire enqueue loop had finished, so an op enqueued early but finished
+// early still reported a latency inflated by however long the rest of the
+// enqueue loop took to run.
+//
+// Fixed by enqueueing with bounded concurrency (`ENQUEUE_CONCURRENCY`) and
+// starting the poller concurrently with enqueueing rather than after it, so
+// submissions actually arrive faster than the dispatcher can drain them and
+// `finishedAt` reflects real completion time.
 import { performance } from "node:perf_hooks";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,6 +75,12 @@ const INTERACTIVE_SHARE = Number(process.env["INTERACTIVE_SHARE"] ?? 0.05);
 const LATENCY_MS = Number(process.env["LATENCY_MS"] ?? 400);
 const TIMEOUT_MS = Number(process.env["SOAK_TIMEOUT_MS"] ?? 180_000);
 const LAG_SAMPLE_INTERVAL_MS = 2_000;
+// How many enqueue POSTs run in parallel. Needs to comfortably outrun the
+// dispatcher's own per-attempt time (LATENCY_MS plus real round trips) or
+// concurrency never builds up regardless of the configured budget -- see
+// the header comment. Default comfortably above dispatcherPoolMax so the
+// shared pool, not this loop, is what paces admission under real latency.
+const ENQUEUE_CONCURRENCY = Number(process.env["ENQUEUE_CONCURRENCY"] ?? 20);
 
 const OBJECT_CLASS = "__ACCOUNT__";
 const instanceIds = Array.from({ length: INSTANCES }, (_, i) => `soak-http-${i}`);
@@ -188,39 +217,63 @@ async function main(): Promise<void> {
   // immune to this regardless of how TOTAL_OPS/INSTANCES relate.
   const opsPerInstance = Math.ceil(TOTAL_OPS / INSTANCES);
   const perInstanceNameSpace = Math.max(1, Math.floor(opsPerInstance / 8));
-  const enqueueStart = performance.now();
-
-  for (let i = 0; i < TOTAL_OPS; i++) {
-    const instanceId = instanceIds[i % INSTANCES]!;
-    const priority = i % Math.round(1 / INTERACTIVE_SHARE) === 0 ? "interactive" : "batch";
-    const indexWithinInstance = Math.floor(i / INSTANCES);
-    const name = `user-${indexWithinInstance % perInstanceNameSpace}`;
-
-    const res = await fetch(`${base}/instances/${instanceId}/objects/${OBJECT_CLASS}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      // __priority isn't a real ICF attribute; it's how the fixture correlates
-      // a recorded attempt back to the priority class that enqueued it, since
-      // the connector SPI has no concept of priority.
-      body: JSON.stringify({ attributes: { __NAME__: name, __priority: priority }, priority }),
-    });
-    if (res.status !== 202) {
-      throw new Error(`enqueue failed: ${res.status} ${await res.text()}`);
-    }
-    const body = await res.json() as { operationId: string };
-    samples.set(body.operationId, { enqueuedAt: performance.now(), priority });
-  }
-
-  const enqueueMs = performance.now() - enqueueStart;
-  console.log(`enqueue: ${TOTAL_OPS} ops in ${enqueueMs.toFixed(0)}ms (${rate(TOTAL_OPS, enqueueMs)}/s)`);
 
   // ---- drain: poll a second, direct pool, not HTTP -------------------------
   // At this scale, polling GET /operations/:id per row would mostly measure
   // HTTP round-trip overhead rather than scheduling behavior -- the same
   // separation soak.ts's own verifyPool-style pattern already established.
+  //
+  // Started concurrently with enqueueing, not after: `finishedAt` needs to
+  // reflect real completion time, and under real network latency the
+  // enqueue loop itself can take long enough that "start polling once
+  // enqueueing is done" would inflate every latency sample by however long
+  // the rest of the enqueue loop took. `expectedTotal` is known up front
+  // (TOTAL_OPS), so the poller doesn't need the full id set before it can
+  // start checking whatever ids have shown up in `samples` so far.
   const pollPool: PgPool = openPool(databaseUrl, 4);
+  const enqueueStart = performance.now();
+  const pollPromise = pollUntilDrained(pollPool, samples, TOTAL_OPS, TIMEOUT_MS);
+
+  // Bounded-concurrency submission, not one `await fetch()` at a time: under
+  // real network latency, a sequential loop paces submissions slowly enough
+  // that the dispatcher usually finishes an instance's previous op before
+  // the next one for that instance is even enqueued, self-limiting observed
+  // concurrency to ~1 regardless of the configured budget -- see the header
+  // comment.
+  let nextIndex = 0;
+  async function enqueueWorker(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++;
+      if (i >= TOTAL_OPS) return;
+
+      const instanceId = instanceIds[i % INSTANCES]!;
+      const priority = i % Math.round(1 / INTERACTIVE_SHARE) === 0 ? "interactive" : "batch";
+      const indexWithinInstance = Math.floor(i / INSTANCES);
+      const name = `user-${indexWithinInstance % perInstanceNameSpace}`;
+
+      const res = await fetch(`${base}/instances/${instanceId}/objects/${OBJECT_CLASS}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        // __priority isn't a real ICF attribute; it's how the fixture correlates
+        // a recorded attempt back to the priority class that enqueued it, since
+        // the connector SPI has no concept of priority.
+        body: JSON.stringify({ attributes: { __NAME__: name, __priority: priority }, priority }),
+      });
+      if (res.status !== 202) {
+        throw new Error(`enqueue failed: ${res.status} ${await res.text()}`);
+      }
+      const body = await res.json() as { operationId: string };
+      samples.set(body.operationId, { enqueuedAt: performance.now(), priority });
+    }
+  }
+
+  await Promise.all(Array.from({ length: ENQUEUE_CONCURRENCY }, () => enqueueWorker()));
+
+  const enqueueMs = performance.now() - enqueueStart;
+  console.log(`enqueue: ${TOTAL_OPS} ops (concurrency ${ENQUEUE_CONCURRENCY}) in ${enqueueMs.toFixed(0)}ms (${rate(TOTAL_OPS, enqueueMs)}/s)`);
+
   const drainStart = performance.now();
-  const finishedCount = await pollUntilDrained(pollPool, samples, TIMEOUT_MS);
+  const finishedCount = await pollPromise;
   const drainMs = performance.now() - drainStart;
 
   const outcomeRows = await pollPool.query<{ status: string; n: number }>(
@@ -240,7 +293,12 @@ async function main(): Promise<void> {
   const batch = latencies("batch");
   const interactive = latencies("interactive");
 
-  console.log(`drain:   ${finishedCount} ops in ${drainMs.toFixed(0)}ms (${rate(finishedCount, drainMs)}/s)`);
+  // Polling started concurrently with enqueueing (see above), so this is not
+  // "time to process finishedCount ops" -- most of them likely finished
+  // while enqueueing was still in progress. It's the tail: how much longer
+  // the poller had to wait, after the last op was submitted, before every op
+  // reached a terminal state.
+  console.log(`drain tail: ${finishedCount}/${TOTAL_OPS} ops terminal, ${drainMs.toFixed(0)}ms after the last enqueue`);
   console.log(`batch       latency p50 ${pct(batch, 50)}ms  p99 ${pct(batch, 99)}ms  n=${batch.length}`);
   console.log(`interactive latency p50 ${pct(interactive, 50)}ms  p99 ${pct(interactive, 99)}ms  n=${interactive.length}`);
   // FAILED_CONFIRMED is expected and not a failure signal here: names are
@@ -300,32 +358,40 @@ async function main(): Promise<void> {
 }
 
 /**
- * Poll a fixed set of ids until every one reaches a terminal status or the
+ * Poll ids until `expectedTotal` of them reach a terminal status or the
  * timeout elapses. Direct-DB, not HTTP -- see the header comment.
+ *
+ * Runs concurrently with enqueueing, not after it: `samples` grows while
+ * this loop runs, so each iteration re-reads its current keys rather than
+ * snapshotting them once. `expectedTotal` (TOTAL_OPS) is known up front, so
+ * the poller doesn't need every id to exist yet to make progress on the ids
+ * it already has.
  */
 async function pollUntilDrained(
     pool: PgPool,
     samples: Map<string, Sample>,
+    expectedTotal: number,
     timeoutMs: number,
 ): Promise<number> {
-  const total = samples.size;
   const seen = new Set<string>();
   const deadline = Date.now() + timeoutMs;
-  const ids = [...samples.keys()];
 
-  while (seen.size < total && Date.now() < deadline) {
-    const { rows } = await pool.query<{ id: string; status: string }>(
-        `SELECT id, status FROM operations WHERE id = ANY($1::uuid[])`,
-        [ids],
-    );
-    for (const row of rows) {
-      if (seen.has(row.id)) continue;
-      if (row.status === "PENDING" || row.status === "RUNNING" || row.status === "AWAITING_READBACK") continue;
-      seen.add(row.id);
-      const s = samples.get(row.id);
-      if (s) s.finishedAt = performance.now();
+  while (seen.size < expectedTotal && Date.now() < deadline) {
+    const ids = [...samples.keys()];
+    if (ids.length > 0) {
+      const { rows } = await pool.query<{ id: string; status: string }>(
+          `SELECT id, status FROM operations WHERE id = ANY($1::uuid[])`,
+          [ids],
+      );
+      for (const row of rows) {
+        if (seen.has(row.id)) continue;
+        if (row.status === "PENDING" || row.status === "RUNNING" || row.status === "AWAITING_READBACK") continue;
+        seen.add(row.id);
+        const s = samples.get(row.id);
+        if (s) s.finishedAt = performance.now();
+      }
     }
-    if (seen.size < total) await new Promise((r) => setTimeout(r, 50));
+    if (seen.size < expectedTotal) await new Promise((r) => setTimeout(r, 50));
   }
   return seen.size;
 }
