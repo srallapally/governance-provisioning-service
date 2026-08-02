@@ -14,7 +14,7 @@
  * case-insensitive SCIM-style operator keywords (they map 1:1 onto core's
  * `Op` union), dotted attribute paths, and string/number/boolean literals.
  * No `or`, `not`, or parentheses/nesting -- see the P4 plan notes and the
- * Backlog section of PROVISIONING_SERVICE_PLAN.md if a caller needs them.
+ * Backlog section of docs/PROVISIONING_SERVICE_PLAN.md if a caller needs them.
  *
  * Grammar:
  *   filter  := clause (" and " clause)*

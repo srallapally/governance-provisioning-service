@@ -15,7 +15,7 @@
 //   2. The actual P1.5 property, not a percentile comparison. soak.ts's own
 //      interactive-latency check is exactly the ordering-satisfiable one the
 //      P8 plan text says not to rely on (`interactive p50 > batch p50`), and
-//      BUG_LOG.md documents why that's a blind spot: with instant
+//      docs/BUG_LOG.md documents why that's a blind spot: with instant
 //      connectors there's rarely a batch attempt still in flight when an
 //      interactive one gets claimed, reservation or not. Every instance
 //      here runs with artificial per-attempt latency (LATENCY_MS) so

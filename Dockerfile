@@ -3,7 +3,7 @@
 # Multi-stage build. `runtime` (the default target) is what a real
 # deployment ships: a non-root, dev-dependency-free image with connector
 # bundles baked in at build time (immutable, versioned deploys -- decided
-# alongside DEPLOYMENT_PLAN.md's k8s design, not chosen ad hoc here).
+# alongside docs/DEPLOYMENT_PLAN.md's k8s design, not chosen ad hoc here).
 #
 # `deps` is also used directly by docker-compose.yml's `jwks` service (the
 # local-dev-only JWT issuer, see scripts/dev-auth.ts) -- it already has every

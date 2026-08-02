@@ -11,7 +11,7 @@
 #     -d '{"attributes":{"__NAME__":"alice"},"priority":"interactive"}'
 #
 # Not a template for a real deployment: production sizing, secrets handling,
-# HA, and DR are DEPLOYMENT_PLAN.md's job. This exists to get a developer
+# HA, and DR are docs/DEPLOYMENT_PLAN.md's job. This exists to get a developer
 # from a clean checkout to a working stack in one command.
 
 services:
